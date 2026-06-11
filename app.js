@@ -1,4 +1,4 @@
-/* 공장용 STEP 견적 계산기 Real Viewer V6 - score based classifier */
+/* 공장용 STEP 견적 계산기 Real Viewer V7 - product name map + bend geometry classifier */
 const $ = (id) => document.getElementById(id);
 const state = {
   fileName: '',
@@ -174,7 +174,7 @@ function computeMeshMetrics(rawMesh, geom){
     dims:[0,0,0], sortedDims:[0,0,0], minDim:0, midDim:0, maxDim:0,
     bboxVolumeMm3:0, surfaceAreaMm2:0, volumeMm3:0, solidness:0,
     flatness:0, slenderness:0, cylinderLike:false, flatPlateLike:false,
-    normalClusterCount:0, normalComplexity:0, triangleCount: Math.floor((idx.length||0)/3)
+    normalClusterCount:0, majorPlaneDirections:0, dominantPlaneDirections:0, normalComplexity:0, triangleCount: Math.floor((idx.length||0)/3)
   };
   try{
     let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
@@ -214,11 +214,16 @@ function computeMeshMetrics(rawMesh, geom){
     metrics.solidness = metrics.bboxVolumeMm3>0 ? Math.min(1, metrics.volumeMm3/metrics.bboxVolumeMm3) : 0;
     metrics.flatness = metrics.minDim>0 ? metrics.maxDim/metrics.minDim : 0;
     metrics.slenderness = metrics.midDim>0 ? metrics.maxDim/metrics.midDim : 0;
-    const significant=[...cluster.values()].filter(v=>area>0 && v/area>0.035);
+    const areas=[...cluster.values()].sort((a,b)=>b-a);
+    const significant=areas.filter(v=>area>0 && v/area>0.035);
+    const major=areas.filter(v=>area>0 && v/area>0.08);
+    const dominant=areas.filter(v=>area>0 && v/area>0.15);
     metrics.normalClusterCount=significant.length;
+    metrics.majorPlaneDirections=major.length;
+    metrics.dominantPlaneDirections=dominant.length;
     metrics.normalComplexity=Math.min(1, significant.length/8);
     metrics.cylinderLike = metrics.minDim>0 && metrics.midDim>0 && (metrics.midDim/metrics.minDim < 1.28) && (metrics.maxDim/metrics.midDim > 2.2);
-    metrics.flatPlateLike = metrics.minDim>0 && metrics.maxDim/metrics.minDim>10 && metrics.midDim/metrics.minDim>4;
+    metrics.flatPlateLike = metrics.minDim>0 && metrics.maxDim/metrics.minDim>7 && metrics.midDim/metrics.minDim>2.2;
   }catch(e){ console.warn('metrics fail', e); }
   return metrics;
 }
@@ -226,58 +231,97 @@ function computeMeshMetrics(rawMesh, geom){
 function parseStepText(text, fileName){
   const entities = readEntities(text);
   const products = new Map(), formations = new Map(), pdMap = new Map(), links = [];
+  const productByNumber = [];
+
   for (const e of entities) {
     if (e.type === 'PRODUCT') {
-      const strings = getStepStrings(e.args); products.set(e.id, {id:e.id, name: cleanName(strings[0] || strings[1] || e.id), strings});
+      const strings = getStepStrings(e.args);
+      const name = cleanName(strings[0] || strings[1] || e.id);
+      const obj = {id:e.id, num:refNum(e.id), name, args:strings};
+      products.set(e.id, obj);
+      productByNumber.push(obj);
     }
   }
+  productByNumber.sort((a,b)=>a.num-b.num);
+
+  // STEP exporter에 따라 PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE 등으로 나옴
   for (const e of entities) {
     if (e.type.startsWith('PRODUCT_DEFINITION_FORMATION')) {
-      const refs = getRefs(e.args); const prodRef = refs.find(r => products.has(r));
+      const refs = getRefs(e.args);
+      const prodRef = refs.find(r => products.has(r));
       formations.set(e.id, {id:e.id, productId:prodRef || null, productName:prodRef ? products.get(prodRef).name : ''});
     }
   }
+
   for (const e of entities) {
     if (e.type === 'PRODUCT_DEFINITION') {
-      const strings = getStepStrings(e.args); const refs = getRefs(e.args);
-      const formRef = refs.find(r => formations.has(r)); const form = formRef ? formations.get(formRef) : null;
+      const strings = getStepStrings(e.args);
+      const refs = getRefs(e.args);
+      const formRef = refs.find(r => formations.has(r));
+      const form = formRef ? formations.get(formRef) : null;
       const pdName = cleanName(strings.find(s => s && s.trim()) || '');
-      const productName = form?.productName || (isBadName(pdName) ? '' : pdName);
-      pdMap.set(e.id, {id:e.id, pdName, formationId:formRef, productId:form?.productId || null, productName});
+      const nearest = nearestProductName(e.id, productByNumber);
+      let productName = form?.productName || '';
+      if (isBadName(productName)) productName = nearest || '';
+      if (isBadName(productName) && !isBadName(pdName)) productName = pdName;
+      pdMap.set(e.id, {id:e.id, num:refNum(e.id), pdName, formationId:formRef, productId:form?.productId || null, productName, nearestProductName:nearest});
     }
   }
+
   for (const e of entities) {
     if (e.type === 'NEXT_ASSEMBLY_USAGE_OCCURRENCE') {
-      const refs = getRefs(e.args); const strings = getStepStrings(e.args);
+      const refs = getRefs(e.args);
+      const strings = getStepStrings(e.args);
       if (refs.length >= 2) {
         const occCandidate = cleanName(strings.find(s => s && !isGenericOccurrence(s)) || '');
         links.push({id:e.id, parent:refs[0], child:refs[1], occurrenceName:occCandidate, rawStrings:strings});
       }
     }
   }
+
   const parentSet = new Set(links.map(l=>l.parent));
-  let leafLinks = links.filter(l => !parentSet.has(l.child));
-  const rows = [];
+  const leafLinks = links.filter(l => !parentSet.has(l.child));
   const byKey = new Map();
+
   for (const l of leafLinks) {
     const pd = pdMap.get(l.child);
     let name = choosePartName(pd, l.occurrenceName, l.child);
+    // Next assembly relationship/design/숫자 ID 같은 이름은 절대 파트명으로 사용하지 않음
+    if (isBadName(name) || isNumberishName(name)) name = pd?.productName || pd?.nearestProductName || l.child;
     if (isAssemblyName(name)) continue;
     const key = norm(name) || l.child;
-    if (!byKey.has(key)) byKey.set(key, {id:key, name, quantity:0, pdIds:new Set(), linkIds:[], source:'PRODUCT_DEFINITION leaf'});
-    const row = byKey.get(key); row.quantity += 1; row.pdIds.add(l.child); row.linkIds.push(l.id);
+    if (!byKey.has(key)) byKey.set(key, {
+      id:key, name, quantity:0, pdIds:new Set(), linkIds:[], source:'leaf product',
+      rawNames:new Set(), meshIndex:null, meshName:''
+    });
+    const row = byKey.get(key);
+    row.quantity += 1;
+    row.pdIds.add(l.child);
+    row.linkIds.push(l.id);
+    row.rawNames.add(name);
   }
-  for (const v of byKey.values()) rows.push({...v, pdIds:[...v.pdIds]});
-  if (rows.length === 0) {
+
+  // 일부 exporter는 NAUO link는 있어도 leaf 링크 이름이 깨질 수 있음. 그땐 parent로 쓰이지 않는 PRODUCT_DEFINITION을 직접 leaf로 사용.
+  if (byKey.size === 0 || [...byKey.values()].every(r => isBadName(r.name) || isNumberishName(r.name))) {
+    byKey.clear();
     for (const [pdId, pd] of pdMap) {
-      const name = choosePartName(pd, '', pdId); if (isAssemblyName(name)) continue;
+      if (parentSet.has(pdId)) continue;
+      let name = choosePartName(pd, '', pdId);
+      if (isBadName(name) || isNumberishName(name)) name = pd.productName || pd.nearestProductName || pdId;
+      if (isAssemblyName(name)) continue;
       const key = norm(name) || pdId;
-      if(!byKey.has(key)) byKey.set(key, {id:key,name,quantity:1,pdIds:[pdId],linkIds:[],source:'PRODUCT_DEFINITION fallback'});
+      if (!byKey.has(key)) byKey.set(key,{id:key,name,quantity:1,pdIds:new Set([pdId]),linkIds:[],source:'leaf PRODUCT_DEFINITION',rawNames:new Set([name]),meshIndex:null,meshName:''});
+      else byKey.get(key).quantity += 1;
     }
-    rows.push(...byKey.values());
   }
-  rows.sort((a,b)=>a.name.localeCompare(b.name,'ko'));
-  return { parts: rows, debug:{fileName, entityCount:entities.length, productCount:products.size, productDefinitionCount:pdMap.size, linkCount:links.length, leafLinkCount:leafLinks.length, assemblyExcludedCount:parentSet.size, sampleProducts:[...products.values()].slice(0,40), samplePd:[...pdMap.values()].slice(0,40), sampleLinks:links.slice(0,40), sampleRows:rows.slice(0,50)} };
+
+  const rows = [...byKey.values()].map(v => ({...v, pdIds:[...v.pdIds], rawNames:[...v.rawNames]}));
+  rows.sort((a,b)=> naturalCompare(a.name,b.name));
+  return { parts: rows, debug:{
+    fileName, entityCount:entities.length, productCount:products.size, productDefinitionCount:pdMap.size,
+    linkCount:links.length, leafLinkCount:leafLinks.length, assemblyExcludedCount:parentSet.size,
+    sampleProducts:[...products.values()].slice(0,60), samplePd:[...pdMap.values()].slice(0,60), sampleLinks:links.slice(0,60), sampleRows:rows.slice(0,80)
+  }};
 }
 
 function readEntities(text){
@@ -288,25 +332,56 @@ function readEntities(text){
 function getRefs(s){ return (s.match(/#\d+/g)||[]); }
 function getStepStrings(s){ const arr=[]; const re=/'((?:''|[^'])*)'/g; let m; while((m=re.exec(s))!==null) arr.push(m[1].replace(/''/g,"'")); return arr; }
 function cleanName(s){ return String(s||'').replace(/^\s+|\s+$/g,'').replace(/^['"]|['"]$/g,'').replace(/\s+/g,' '); }
-function isGenericOccurrence(s){ const n=String(s||'').toLowerCase(); return !n || n==='next assembly relationship' || n==='design' || n==='na'; }
-function isBadName(s){ const n=String(s||'').toLowerCase(); return !n || n==='design' || n==='next assembly relationship' || n==='part' || n==='unknown'; }
-function choosePartName(pd, occ, fallback){ if(occ && !isGenericOccurrence(occ)) return occ; if(pd?.productName && !isBadName(pd.productName)) return pd.productName; if(pd?.pdName && !isBadName(pd.pdName)) return pd.pdName; return fallback || 'UNNAMED_PART'; }
+function refNum(ref){ const m=String(ref||'').match(/#(\d+)/); return m?Number(m[1]):0; }
+function nearestProductName(pdId, sortedProducts){
+  const n=refNum(pdId); let best=null;
+  for (const p of sortedProducts){ if(p.num < n) best=p; else break; }
+  return best && !isBadName(best.name) ? best.name : '';
+}
+function isGenericOccurrence(s){ const n=String(s||'').toLowerCase(); return !n || n==='next assembly relationship' || n==='design' || n==='na' || n==='none'; }
+function isNumberishName(s){ return /^#?\d+$/.test(String(s||'').trim()); }
+function isBadName(s){ const n=String(s||'').trim().toLowerCase(); return !n || n==='design' || n==='next assembly relationship' || n==='part' || n==='unknown' || n==='unnamed_part' || isNumberishName(n); }
+function choosePartName(pd, occ, fallback){ if(occ && !isGenericOccurrence(occ) && !isNumberishName(occ)) return occ; if(pd?.productName && !isBadName(pd.productName)) return pd.productName; if(pd?.nearestProductName && !isBadName(pd.nearestProductName)) return pd.nearestProductName; if(pd?.pdName && !isBadName(pd.pdName)) return pd.pdName; return fallback || 'UNNAMED_PART'; }
 function isAssemblyName(name){ const n=String(name||'').toUpperCase(); return /(_ASM$|_ASSY$|ASSY_|ASSEMBLY|ASM$)/.test(n); }
 function norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9가-힣]/g,''); }
+function naturalCompare(a,b){ return String(a).localeCompare(String(b),'ko',{numeric:true,sensitivity:'base'}); }
 
+function meshCleanName(name){
+  const raw=String(name||'').trim();
+  let n=raw.replace(/^mesh[_ -]*/i,'').replace(/\.[^.]+$/,'');
+  n=n.replace(/^(PRODUCT|PART|SHAPE)[_ -]*/i,'');
+  return cleanName(n) || raw;
+}
+function betterPartName(partName, meshName){
+  const pc=cleanName(partName), mc=meshCleanName(meshName);
+  if(!isBadName(pc) && !isNumberishName(pc)) return pc;
+  if(!isBadName(mc) && !isNumberishName(mc)) return mc;
+  return pc || mc || 'UNNAMED_PART';
+}
 function mergeTextPartsWithMeshes(parts, meshes){
-  const meshInfo = state.meshObjects.map((o,i)=>({idx:i, name:o.name||`MESH_${i+1}`, norm:o.norm, metrics:o.metrics}));
-  return parts.map((p, i) => {
+  const meshInfo = state.meshObjects.map((o,i)=>({idx:i, name:o.name||`MESH_${i+1}`, clean:meshCleanName(o.name||`MESH_${i+1}`), norm:o.norm, cleanNorm:norm(meshCleanName(o.name||'')), metrics:o.metrics}));
+  const merged = parts.map((p, i) => {
     const pn = norm(p.name);
-    let matched = meshInfo.find(mi => mi.norm && pn && (mi.norm.includes(pn) || pn.includes(mi.norm)));
-    // try removing common CAD suffixes for product names and mesh names
-    if(!matched){
-      const simple = norm(String(p.name).replace(/(_REV\d+|REV\d+|_ASM|_ASSY|ASSY|ASM)$/ig,''));
-      matched = meshInfo.find(mi => mi.norm && simple && (mi.norm.includes(simple) || simple.includes(mi.norm)));
-    }
-    if (!matched && meshInfo.length === parts.length) matched = meshInfo[i];
-    return {...p, meshIndex: matched?.idx ?? null, meshName: matched?.name || '', meshMetrics: matched?.metrics || null};
+    const psimple = norm(String(p.name).replace(/(_REV\d+|REV\d+|_ASM|_ASSY|ASSY|ASM)$/ig,''));
+    let matched = null;
+    if(pn) matched = meshInfo.find(mi => mi.cleanNorm && (mi.cleanNorm.includes(pn) || pn.includes(mi.cleanNorm)));
+    if(!matched && psimple) matched = meshInfo.find(mi => mi.cleanNorm && (mi.cleanNorm.includes(psimple) || psimple.includes(mi.cleanNorm)));
+    if(!matched && meshInfo.length === parts.length) matched = meshInfo[i];
+    const name = betterPartName(p.name, matched?.clean || matched?.name || '');
+    return {...p, name, meshIndex: matched?.idx ?? null, meshName: matched?.name || '', meshMetrics: matched?.metrics || null};
   });
+  // 최종 이름 기준으로 다시 그룹. 같은 파트가 여러 occurrence/mesh로 중복 표시되는 문제를 줄인다.
+  const by = new Map();
+  for(const p of merged){
+    const key = norm(p.name) || p.id;
+    if(!by.has(key)) by.set(key,{...p, id:key, quantity:0, pdIds:[], linkIds:[]});
+    const r=by.get(key);
+    r.quantity += Number(p.quantity)||1;
+    if(p.pdIds) r.pdIds.push(...p.pdIds);
+    if(p.linkIds) r.linkIds.push(...p.linkIds);
+    if(r.meshIndex==null && p.meshIndex!=null){ r.meshIndex=p.meshIndex; r.meshName=p.meshName; r.meshMetrics=p.meshMetrics; }
+  }
+  return [...by.values()].sort((a,b)=>naturalCompare(a.name,b.name));
 }
 
 function enrichPart(p, idx){
@@ -339,24 +414,32 @@ function deriveFeatures(name, metrics){
   const m = metrics || {};
   const minDim = Number(m.minDim)||0, midDim=Number(m.midDim)||0, maxDim=Number(m.maxDim)||0;
   const solidness = Number(m.solidness)||0;
-  const flatPlateLike = Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>10 && midDim/minDim>4));
-  const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.16 && maxDim>60));
-  const cylinderLike = Boolean(m.cylinderLike);
+  const majorPlaneDirections = Number(m.majorPlaneDirections)||0;
+  const dominantPlaneDirections = Number(m.dominantPlaneDirections)||0;
   const normalClusterCount = Number(m.normalClusterCount)||0;
+  const flatPlateLike = Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>7 && midDim/minDim>2.2));
+  const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.22 && maxDim>45 && minDim>0 && maxDim/minDim>4));
+  const cylinderLike = Boolean(m.cylinderLike);
   const bendNameHint = /BEND|BENT|FOLD|FLANGE|절곡|L[-_ ]?BRACKET|U[-_ ]?BRACKET|ㄱ|ㄷ/.test(n);
   const sheetNameHint = /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|브라켓|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
-  const thickByName = tName>=8;
-  let thickness = tName || (flatPlateLike && minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : (minDim>0 && minDim<40 ? round1(minDim) : 8)));
-  // Bend auto count only when both sheet-likeness and true bend evidence exist. 이름만 COVER/PANEL이면 0회.
+  const thickByName = tName>=10;
+  let thickness = tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
+
+  // 절곡 기준: 같은 두께 판재/쉘형 + 서로 다른 큰 평면 방향이 2개 이상이면 1회 이상.
+  // 단순 이름만 COVER/PANEL이면 0회. 두꺼운 블록/구매품은 제외는 분류 단계에서 감점.
   let bends = 0;
-  const bendGeometryEvidence = shellLike && normalClusterCount >= 3 && !thickByName;
-  if(bendNameHint && shellLike) bends = Math.max(1, Math.min(8, normalClusterCount>0 ? normalClusterCount-1 : 1));
-  else if(bendGeometryEvidence && sheetNameHint) bends = Math.max(1, Math.min(8, normalClusterCount-2));
+  const sheetGeometry = (flatPlateLike || shellLike) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName;
+  const directionBasedBends = sheetGeometry && majorPlaneDirections >= 2 ? Math.max(1, Math.min(8, majorPlaneDirections - 1)) : 0;
+  if(sheetGeometry && bendNameHint) bends = Math.max(1, directionBasedBends || 1);
+  else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = directionBasedBends;
+  else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.18) bends = Math.max(1, majorPlaneDirections - 2);
   if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends = Math.max(bends,2);
   if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends = Math.max(bends,1);
+
   const taps = (/TAP|M\d+/.test(n) && !/BOLT|SCREW|NUT/.test(n)) ? 1 : 0;
-  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, bendNameHint, sheetNameHint, thickByName, bends, taps};
+  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry};
 }
+
 function round1(v){ return Math.round(v*10)/10; }
 
 function classifyPartAdvanced(name, f){
@@ -381,10 +464,11 @@ function classifyPartAdvanced(name, f){
 
   // 4) 판금/절곡: 같은 두께 판재/쉘형 + 커버/후드/패널/바디명. 절곡은 bends 값으로 따로 관리.
   if(f.sheetNameHint) add('sheet',32,'판금/커버/후드/패널류 이름');
-  if(f.flatPlateLike) add('sheet',42,'형상: 얇고 넓은 판재형');
-  if(f.shellLike) add('sheet',32,'형상: bbox 대비 체적 낮은 쉘/판재형');
+  if(f.flatPlateLike) add('sheet',48,'형상: 얇고 넓은 판재형');
+  if(f.shellLike) add('sheet',38,'형상: bbox 대비 체적 낮은 쉘/판재형');
+  if(f.sheetGeometry && f.majorPlaneDirections>=2) add('sheet',32,`형상: 서로 다른 판면 방향 ${f.majorPlaneDirections}개`);
   if(f.tName>0 && f.tName<=6) add('sheet',28,`두께명 ${f.tName}T`);
-  if(f.tName>6) add('sheet',-35,`두께명 ${f.tName}T: 절곡 자동 제외`);
+  if(f.tName>12) add('sheet',-35,`두께명 ${f.tName}T: 두꺼워 판금 감점`);
   if(f.bends>0) add('sheet',25,`절곡 후보 ${f.bends}회`);
   if(/HOOD|WATER[_ -]?BOTTLE|COVER|PANEL|SIDE|TOP/.test(n)) add('sheet',18,'제품명상 판금 가능성');
 
@@ -513,7 +597,7 @@ function renderSelected(){
   const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
   panel.innerHTML = `<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3><div class="preview-box">${esc(PROCESS_LABELS[p.process]||p.process)}</div>
     <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">신뢰도 ${esc(p.confidence)}</span></div>
-    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
 function isolateSelectedMesh(p){

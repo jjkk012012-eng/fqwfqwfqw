@@ -1,24 +1,21 @@
-공장용 STEP 견적 계산기 - Classifier V6
+공장용 STEP 견적 계산기 V7
 
-이번 버전 핵심:
-1. 파일 선택 버튼/드래그 업로드 동작 유지
-2. vendor 폴더에 OCCT/Three.js 포함, CDN 의존 없음
-3. OCCT mesh가 잡히면 실제 3D 뷰어 표시
-4. 말단 파트명은 STEP PRODUCT_DEFINITION -> PRODUCT 매핑 우선
-5. 공법 자동분류를 이름만으로 하지 않고 mesh bbox/체적비/평면군/두께명/파트명을 점수화
-6. 파이프/튜브/니플/피팅/볼트/너트/리벳/스크류/센서/모터/리드류는 구매품 우선
-7. 프로파일은 2020/3030/4040/4080/PROFILE 계열만, PIPE/TUBE는 구매품 우선
-8. 선반은 SHAFT/BUSH/ROLLER/COLLAR/ROD 또는 길쭉한 원통형 mesh 기준
-9. 판금은 HOOD/COVER/PANEL/BODY/SIDE/TOP/WATER_BOTTLE 등 이름 + 얇은 판재/쉘형 mesh 기준
-10. 절곡 자동값은 얇은 판재/쉘형 + normal cluster 또는 BEND/FLANGE/L/U BRACKET 힌트가 있을 때만 생성
-11. CNC는 구매품/프로파일/선반/판금을 먼저 제외한 뒤, 덩어리형 체적비/두꺼운 T/BASE/BLOCK/JIG/PLATE류 기준으로 판단
-12. 신뢰도 낮거나 점수차가 작으면 '분류 필요'로 두고 공장이 직접 선택
+수정 핵심
+1) PRODUCT_DEFINITION leaf가 숫자/Next assembly relationship으로 뜨는 문제 보정
+   - PRODUCT_DEFINITION -> PRODUCT_DEFINITION_FORMATION -> PRODUCT 이름 우선 사용
+   - 그래도 안 잡히면 STEP 엔티티 번호상 바로 앞 PRODUCT 이름을 fallback 사용
+   - 최종 표시명 기준으로 다시 그룹핑하여 같은 파트 중복 표시 감소
 
-GitHub Pages 업로드:
-- ZIP 안의 index.html, styles.css, app.js, README.txt, data 폴더, vendor 폴더를 저장소 root에 넣으세요.
-- 폴더째 넣지 말고 내용물만 넣어야 합니다.
-- Push 후 Pages에서 Ctrl+F5로 새로고침하세요.
+2) 절곡 자동 후보 개선
+   - 단순 90도 모서리만 보고 절곡으로 잡지 않음
+   - mesh에서 얇은 판재/쉘형 + 서로 다른 큰 판면 방향 2개 이상이면 절곡 1회 이상 후보
+   - L브라켓/U브라켓/FLANGE/BEND/BENT/FOLD 이름 힌트는 보조 가산
+   - 자동값은 후보이며 공장이 표에서 수정 가능
 
-주의:
-- STEP에서 공차/재질/진짜 절곡 R/나사산이 항상 들어있지는 않습니다.
-- 이 프로그램은 자동 추천을 먼저 채우고, 공장이 최종 수정하는 구조입니다.
+3) 공법 분류 개선
+   - 구매품(볼트, 너트, 스크류, 리벳, 파이프, 니플 등) 우선
+   - 프로파일/선반/판금 후보를 먼저 제외하고 남은 덩어리형을 CNC로 추천
+
+업로드 방법
+- 이 폴더 안의 index.html, styles.css, app.js, README.txt, data, vendor를 GitHub 저장소 root에 넣으세요.
+- 폴더째 넣지 말고 내용물만 넣어야 GitHub Pages가 정상 작동합니다.
