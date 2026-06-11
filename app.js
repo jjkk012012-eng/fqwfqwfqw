@@ -3,7 +3,7 @@ const nf = new Intl.NumberFormat('ko-KR');
 const PROCESS_LABELS = {purchase:'구매품', sheet:'판금/절곡', cnc:'CNC/MCT', lathe:'선반', injection:'사출', print3d:'3D프린팅', profile:'압출/프로파일', unknown:'분류 필요'};
 const MATERIALS = ["AL6061", "AL5052", "AL7075", "SUS304", "SUS316", "SUS430", "SS400", "S45C", "SCM440", "SKD11", "SPCC", "SPHC", "SECC", "SGCC", "C3604", "C1100", "ABS", "POM", "PC", "PP", "PE", "PA66", "MC_NYLON", "PLA", "PETG", "TPU", "PEEK"];
 const PROCESSES = ['purchase','sheet','cnc','lathe','injection','print3d','profile','unknown'];
-const state = {rates:null, rules:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}};
+const state = {rates:null, rules:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}, manualCounter:1};
 const DEFAULT_RATES = {
   materials:{
       "AL6061": {
@@ -271,6 +271,8 @@ function initUpload(){
 function bindActions(){
   $('recalcBtn').addEventListener('click',()=>{ recalcAll(); renderParts(); renderSelected(); });
   $('exportCsvBtn').addEventListener('click', exportCsv);
+  $('addPartBtn')?.addEventListener('click', addManualPart);
+  $('deleteSelectedBtn')?.addEventListener('click', () => deletePart(state.selectedId));
   $('fitBtn').addEventListener('click', fitCamera);
   $('saveRatesBtn').addEventListener('click', saveRatesToBrowser);
   $('downloadRatesBtn').addEventListener('click', downloadRates);
@@ -826,7 +828,61 @@ function calcPart(p){
   detail.margin=pre*num(p.margin)/100; p.quote=Math.round(pre+detail.margin); p.costBreakdown=detail; return p.quote;
 }
 
-function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body.innerHTML='<tr><td colspan="8" class="empty-row">파트가 없습니다.</td></tr>'; return; }
+
+function addManualPart(){
+  const name = cleanName(prompt('추가할 파트명을 입력하세요. 예: 구매 볼트 M6, 외주 가공품, 표준 브라켓') || '');
+  if(!name) return;
+  const id = 'manual_' + Date.now() + '_' + (state.manualCounter++);
+  const p = {
+    id,
+    name,
+    qty:1,
+    source:'수동 추가',
+    meshName:'',
+    meshNorm:'',
+    metrics:null,
+    meshIndex:null,
+    matchType:'manual',
+    process:'purchase',
+    material:'SS400',
+    kgPerEa:0,
+    baseVolumeCm3:0,
+    timePerEa:0,
+    bends:0,
+    purchaseUnit:0,
+    margin:state.rates.process.purchase?.margin ?? 10,
+    classInfo:{process:'purchase',confidence:'수동 추가',confidenceScore:100,reasons:['공장이 직접 추가한 파트입니다. 공법/수량/단가를 수정하세요.'],top:[['purchase',100]]},
+    quote:0,
+    costBreakdown:{}
+  };
+  state.parts.push(p);
+  state.selectedId=id;
+  calcPart(p);
+  renderParts();
+  renderSelected();
+  updateStats();
+  showPart(p);
+  setMessage('ok','수동 파트를 추가했습니다. 공법과 단가를 수정하세요.');
+}
+function deletePart(id){
+  if(!id) return;
+  const p = state.parts.find(x=>x.id===id);
+  if(!p) return;
+  if(!confirm(`'${p.name}' 파트를 견적표에서 삭제할까요?`)) return;
+  state.parts = state.parts.filter(x=>x.id!==id);
+  if(state.selectedId===id){
+    state.selectedId = state.parts[0]?.id || null;
+    const next = state.parts.find(x=>x.id===state.selectedId);
+    if(next) showPart(next); else hideAllMeshes();
+  }
+  recalcAll();
+  renderParts();
+  renderSelected();
+  updateStats();
+  setMessage('ok','파트를 삭제했습니다. 삭제한 파트는 견적 합계와 CSV에서 제외됩니다.');
+}
+
+function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body.innerHTML='<tr><td colspan="9" class="empty-row">파트가 없습니다. [파트 추가]로 구매품/수동 파트를 추가할 수 있습니다.</td></tr>'; return; }
   body.innerHTML=state.parts.map(p=>`
     <tr data-id="${p.id}" class="${p.id===state.selectedId?'row-selected':''} ${p.meshName?'':'unmatched'}">
       <td><span class="part-name">${esc(p.name)}</span><span class="part-sub">${p.meshName?'mesh: '+esc(p.meshName)+(p.matchType==='추정'?' · 추정':''):'형상 대기'}</span></td>
@@ -837,9 +893,11 @@ function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body
       <td>${processInputCell(p)}</td>
       <td>${input(p.id,'margin',p.margin,'number','1',false)}</td>
       <td class="money">${won(p.quote)}</td>
+      <td><button type="button" class="row-delete" data-delete="${p.id}">삭제</button></td>
     </tr>`).join('');
   body.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); }));
   body.querySelectorAll('input,select').forEach(el=>el.addEventListener('change', onPartEdit));
+  body.querySelectorAll('button[data-delete]').forEach(btn=>btn.addEventListener('click', e=>{ e.stopPropagation(); deletePart(btn.dataset.delete); }));
 }
 function processInputCell(p){
   if(p.process==='sheet') return `<div class="inline-edit"><label>절곡수</label>${input(p.id,'bends',p.bends,'number','1',false)}</div>`;
@@ -885,8 +943,9 @@ function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId);
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
   <h3>빠른 변경</h3><div class="quick-actions">
     <button data-quick="sheet">판금/절곡</button><button data-quick="cnc">CNC/MCT</button><button data-quick="purchase">구매품</button><button data-quick="lathe">선반</button><button data-quick="print3d">3D프린팅</button><button data-quick="profile">압출</button>
-  </div><h2 class="money">${won(p.quote)}</h2>`;
+  </div><button type="button" id="deletePartInPanel" class="danger-wide">선택 파트 삭제</button><h2 class="money">${won(p.quote)}</h2>`;
   el.querySelectorAll('button[data-quick]').forEach(btn=>btn.addEventListener('click',()=>quickEdit(p,btn.dataset.quick)));
+  el.querySelector('#deletePartInPanel')?.addEventListener('click',()=>deletePart(p.id));
 }
 function quickEdit(p,cmd){
   if(PROCESSES.includes(cmd)){

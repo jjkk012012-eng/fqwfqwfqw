@@ -51,6 +51,8 @@
             <p>파트별 공법만 확인하고, 필요한 입력값만 수정하면 견적이 계산됩니다.</p>
           </div>
           <div class="button-row">
+            <button id="addPartBtn" type="button">파트 추가</button>
+            <button id="deleteSelectedBtn" type="button">선택 삭제</button>
             <button id="recalcBtn" type="button">전체 재계산</button>
             <button id="exportCsvBtn" type="button">CSV 내보내기</button>
           </div>
@@ -67,10 +69,11 @@
                 <th>입력값</th>
                 <th>마진%</th>
                 <th>견적가</th>
+                <th>관리</th>
               </tr>
             </thead>
             <tbody id="partsBody">
-              <tr><td colspan="8" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
+              <tr><td colspan="9" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
             </tbody>
           </table>
         </div>
