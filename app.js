@@ -107,17 +107,58 @@ function buildThreeMeshes(meshes){
   fitCamera();
 }
 function color(i){return [0x92b4ff,0x9cf6d0,0xffd166,0xffaaa5,0xc4b5fd,0x93c5fd,0xfcd34d,0xa7f3d0][i%8];}
-function showAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=true); state.selectedId=null; fitCamera(); }
-function showPart(part){ if(!part) return; state.meshObjects.forEach(o=>o.group.visible=false); if(part.meshNorm){ const g=state.meshByNorm.get(part.meshNorm); if(g) g.visible=true; } fitCamera(); }
-function fitCamera(){
-  const {root,camera,controls}=state.three; if(!root||!camera)return; const box=new THREE.Box3().setFromObject(root); if(!Number.isFinite(box.min.x)) return;
-  const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const max=Math.max(size.x,size.y,size.z)||100;
-  camera.position.copy(center).add(new THREE.Vector3(max*1.2,max*1.5,max*.9)); camera.near=max/1000; camera.far=max*100; camera.updateProjectionMatrix(); controls?.target.copy(center); controls?.update();
+function showAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=true); state.selectedId=null; fitCamera(false); }
+function showPart(part){
+  if(!part) return;
+  state.meshObjects.forEach(o=>o.group.visible=false);
+  let shown=false;
+  if(part.meshNorm){
+    const g=state.meshByNorm.get(part.meshNorm);
+    if(g){ g.visible=true; shown=true; }
+  }
+  if(!shown && part.meshName){
+    const pn=norm(part.meshName);
+    for(const o of state.meshObjects){
+      if(o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm)){ o.group.visible=true; shown=true; break; }
+    }
+  }
+  if(!shown){
+    // 형상 매칭이 없는 파트는 전체를 보여주되, 표/우측 패널에서 수정 가능하게 둔다.
+    state.meshObjects.forEach(o=>o.group.visible=true);
+  }
+  fitCamera(true);
+}
+function visibleSceneBox(root){
+  const box=new THREE.Box3();
+  let has=false;
+  if(!root) return {box,has};
+  root.updateWorldMatrix(true,true);
+  root.traverse(o=>{
+    if(!o.visible || !o.isMesh || !o.geometry) return;
+    if(!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld);
+    if(Number.isFinite(b.min.x)){ box.union(b); has=true; }
+  });
+  return {box,has};
+}
+function fitCamera(visibleOnly=false){
+  const {root,camera,controls}=state.three; if(!root||!camera)return;
+  let box, has;
+  if(visibleOnly) ({box,has}=visibleSceneBox(root));
+  else { box=new THREE.Box3().setFromObject(root); has=Number.isFinite(box.min.x); }
+  if(!has || !Number.isFinite(box.min.x)) return;
+  const size=new THREE.Vector3(); box.getSize(size);
+  const center=new THREE.Vector3(); box.getCenter(center);
+  const max=Math.max(size.x,size.y,size.z)||10;
+  camera.position.copy(center).add(new THREE.Vector3(max*1.4,max*1.7,max*1.0));
+  camera.near=Math.max(max/2000,0.001); camera.far=Math.max(max*200,1000);
+  camera.updateProjectionMatrix();
+  controls?.target.copy(center); controls?.update();
 }
 
 async function handleFile(file){
   state.fileName=file.name; state.parts=[]; state.selectedId=null; resetScene();
-  setMessage('','파일 분석 중입니다...'); $('partsBody').innerHTML='<tr><td colspan="11" class="empty-row">분석 중...</td></tr>';
+  setMessage('','파일 분석 중입니다...'); $('partsBody').innerHTML='<tr><td colspan="8" class="empty-row">분석 중...</td></tr>';
   try{
     const buffer=await file.arrayBuffer(); const text=await file.text(); const textInfo=parseStepText(text,file.name);
     let occt={ok:false,meshes:[],error:''};
@@ -310,7 +351,7 @@ function calcPart(p){
   detail.margin=pre*num(p.margin)/100; p.quote=Math.round(pre+detail.margin); p.costBreakdown=detail; return p.quote;
 }
 
-function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body.innerHTML='<tr><td colspan="11" class="empty-row">파트가 없습니다.</td></tr>'; return; }
+function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body.innerHTML='<tr><td colspan="8" class="empty-row">파트가 없습니다.</td></tr>'; return; }
   body.innerHTML=state.parts.map(p=>`
     <tr data-id="${p.id}" class="${p.id===state.selectedId?'row-selected':''} ${p.meshName?'':'unmatched'}">
       <td><span class="part-name">${esc(p.name)}</span><span class="part-sub">${p.meshName?'mesh: '+esc(p.meshName):'형상 미연결'}</span></td>
@@ -318,15 +359,20 @@ function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body
       <td><span class="tag">${PROCESS_LABELS[p.process]}</span><div class="reason">${esc(reasonText(p))}</div></td>
       <td>${selectProcess(p)}</td>
       <td>${selectMaterial(p)}</td>
-      <td>${input(p.id,'kgPerEa',p.kgPerEa,'number','0.001',p.process==='purchase')}</td>
-      <td>${input(p.id,'bends',p.bends,'number','1',p.process!=='sheet')}</td>
-      <td>${input(p.id,'timePerEa',p.timePerEa,'number','0.01',!usesTime(p.process))}</td>
-      <td>${input(p.id,'purchaseUnit',p.purchaseUnit,'number','1',p.process!=='purchase')}</td>
+      <td>${processInputCell(p)}</td>
       <td>${input(p.id,'margin',p.margin,'number','1',p.process==='welding')}</td>
       <td class="money">${p.process==='welding'?'내부검토':won(p.quote)}</td>
     </tr>`).join('');
   body.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); }));
   body.querySelectorAll('input,select').forEach(el=>el.addEventListener('change', onPartEdit));
+}
+function processInputCell(p){
+  if(p.process==='sheet') return `<div class="inline-edit"><label>절곡수</label>${input(p.id,'bends',p.bends,'number','1',false)}</div>`;
+  if(usesTime(p.process)) return `<div class="inline-edit"><label>시간/개</label>${input(p.id,'timePerEa',p.timePerEa,'number','0.01',false)}</div>`;
+  if(p.process==='purchase') return `<div class="inline-edit"><label>구매단가</label>${input(p.id,'purchaseUnit',p.purchaseUnit,'number','1',false)}</div>`;
+  if(p.process==='profile') return `<span class="muted-small">압출 가공비 적용</span>`;
+  if(p.process==='welding') return `<span class="muted-small">내부 검토</span>`;
+  return `<span class="muted-small">공법 선택 필요</span>`;
 }
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function input(id,field,val,type='number',step='1',disabled=false){ return `<input data-id="${id}" data-field="${field}" type="${type}" step="${step}" value="${esc(val)}" ${disabled?'disabled':''}>`; }
@@ -350,7 +396,7 @@ function selectPart(id){ state.selectedId=id; const p=state.parts.find(x=>x.id==
 function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId); const el=$('selectedPanel'); if(!p){ el.innerHTML='<h2>선택 파트</h2><p class="muted">파트를 선택하세요.</p>'; return; }
   const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금: 절곡수 입력':usesTime(p.process)?'시간 공정: 시간/개 입력':p.process==='purchase'?'구매품: 단가 입력':p.process==='welding'?'용접: 내부 검토':'기본 계산';
   el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName||'형상 미연결')}</p>
-  <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>kg/개</b><br>${p.kgPerEa}</div><div><b>입력 기준</b><br>${mode}</div></div>
+  <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>입력 기준</b><br>${mode}</div><div><b>예상 무게</b><br>${p.kgPerEa}kg/개</div></div>
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
   <h3>빠른 변경</h3><div class="quick-actions">
     <button data-quick="sheet">판금/절곡</button><button data-quick="cnc">CNC/MCT</button><button data-quick="purchase">구매품</button><button data-quick="print3d">3D프린팅</button>
@@ -392,4 +438,4 @@ function pasteRates(){ try{ const obj=JSON.parse($('ratesPaste').value); state.r
 
 function updateStats(){ $('statAssembly').textContent=state.assemblyName||'-'; $('statParts').textContent=state.parts.length; $('statMeshes').textContent=state.meshObjects.length; $('statTotal').textContent=won(state.parts.reduce((s,p)=>s+p.quote,0)); }
 function renderDebug(obj){ $('debugPre').textContent=JSON.stringify(obj||state.debug,null,2); }
-function exportCsv(){ const rows=[['파트','수량','공법','재질','kg/개','절곡수','시간/개','구매단가','마진%','견적가']].concat(state.parts.map(p=>[p.name,p.qty,PROCESS_LABELS[p.process],p.material,p.kgPerEa,p.bends,p.timePerEa,p.purchaseUnit,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote.csv'; a.click(); URL.revokeObjectURL(a.href); }
+function exportCsv(){ const rows=[['파트','수량','공법','재질','예상kg/개','절곡수','시간/개','구매단가','마진%','견적가']].concat(state.parts.map(p=>[p.name,p.qty,PROCESS_LABELS[p.process],p.material,p.kgPerEa,p.bends,p.timePerEa,p.purchaseUnit,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote.csv'; a.click(); URL.revokeObjectURL(a.href); }

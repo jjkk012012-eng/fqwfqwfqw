@@ -9,3 +9,5 @@ STEP 견적 자동 산출 V18
 - 단가표는 다운로드/불러오기/복사/붙여넣기/브라우저 저장이 가능합니다.
 
 GitHub Pages 업로드 시 ZIP 안 내용물(index.html, styles.css, app.js, README.txt, data, vendor)을 저장소 root에 넣으세요.
+
+V20: 구매품/볼트/너트처럼 작은 파트도 행 클릭 시 해당 mesh만 보이고, 보이는 파트 기준으로 카메라를 맞춥니다.
