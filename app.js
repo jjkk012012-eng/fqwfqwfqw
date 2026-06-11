@@ -339,6 +339,7 @@ function meshForPart(part){
 function showPart(part){
   clearFocus(); state.meshObjects.forEach(o=>o.group.visible=false);
   if(!part || !state.three.root) return;
+  if(isManualPurchasePart(part)){renderViewerMessage('수동 구매품은 STEP 형상이 없는 항목입니다.'); return;}
   const srcs=meshesForPart(part);
   if(!srcs.length){renderViewerMessage('이 파트의 3D 형상 연결을 확인해야 합니다.'); return;}
   $('viewer').querySelector('.viewer-empty')?.remove();
@@ -490,6 +491,7 @@ function assignMeshToPart(part, orderIndex){
   if(best){part.meshIndex=best.index; part.meshIndices=[best.index]; part.meshName=best.name; part.metrics=best.metrics; part.meshMatchScore=bestScore;}
 }
 function isNumberish(name){return /^#?\d+$/.test(String(name||'').trim()) || /^MESH[_-]?\d+$/i.test(String(name||'').trim());}
+function isManualPurchasePart(part){return !!part && (part.source==='manual' || /^수동\s*구매품/i.test(String(part.name||'')));}
 function initPart(p,i){
   const meshIndices=Array.isArray(p.meshIndices)?p.meshIndices.filter(x=>state.meshObjects[x]):[];
   const firstMesh=meshIndices.length?state.meshObjects[meshIndices[0]]:null;
@@ -499,7 +501,7 @@ function initPart(p,i){
     metrics:p.metrics||firstMesh?.metrics||null, process:'unknown', material:'AL6061',
     inputValue:0, extraCost:0, margin:0, purchaseUnit:1000, manualWeight:null, quote:0, score:null
   };
-  if(!part.meshIndices.length && part.meshIndex==null) assignMeshToPart(part,i);
+  if(!isManualPurchasePart(part) && !part.meshIndices.length && part.meshIndex==null) assignMeshToPart(part,i);
   if(part.meshIndices.length && part.meshIndex==null) part.meshIndex=part.meshIndices[0];
   const rec=recommendProcess(part); applyRecommendation(part,rec);
   return part;
@@ -980,7 +982,7 @@ function selectPart(id){
   if(p)showPart(p);
 }
 function removePart(id){state.parts=state.parts.filter(p=>p.id!==id); if(state.selectedId===id)state.selectedId=state.parts[0]?.id||null; recalcAll(); renderAll(); if(state.selectedId)showPart(selectedPart());}
-function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual'},state.parts.length); p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); p.extraCost=0; recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll();}
+function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual',meshIndices:[],meshIndex:null,meshName:'',metrics:null},state.parts.length); p.meshIndices=[]; p.meshIndex=null; p.meshName=''; p.metrics=null; p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); p.extraCost=0; recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll(); showPart(p);}
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
