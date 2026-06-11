@@ -497,7 +497,7 @@ function initPart(p,i){
     id:'p'+Date.now()+'_'+i, name:p.name, qty:num(p.qty,1), source:p.source||'',
     meshIndices, meshIndex:p.meshIndex, meshName:p.meshName||firstMesh?.name||'',
     metrics:p.metrics||firstMesh?.metrics||null, process:'unknown', material:'AL6061',
-    inputValue:0, margin:0, purchaseUnit:1000, manualWeight:null, quote:0, score:null
+    inputValue:0, extraCost:0, margin:0, purchaseUnit:1000, manualWeight:null, quote:0, score:null
   };
   if(!part.meshIndices.length && part.meshIndex==null) assignMeshToPart(part,i);
   if(part.meshIndices.length && part.meshIndex==null) part.meshIndex=part.meshIndices[0];
@@ -828,6 +828,8 @@ function recalcPart(p){
   else if(p.process==='print3d') {const h=num(p.inputValue,0); base=mat + q*h*num(state.rates.process.print3dHourly,0) + q*num(state.rates.process.print3dSetup,0); note=`재료 ${Math.round(mat)} + 시간 ${h}`;}
   else if(p.process==='profile') {base=mat + q*num(p.inputValue||state.rates.process.profileProcessEach,0); note=`재료 ${Math.round(mat)} + 가공비`;}
   else {base=0; note='공법 선택 필요';}
+  const extra=num(p.extraCost,0);
+  if(extra){ base += extra; note += ` + 기타 ${Math.round(extra)}`; }
   p.calcNote=note; p.quote=Math.round(base*(1+margin)); return p.quote;
 }
 function recalcAll(){state.parts.forEach(recalcPart); updateStats();}
@@ -839,7 +841,7 @@ function sortPartsBy(key){
   if(state.sort.key===key) state.sort.dir*=-1;
   else state.sort={key,dir:1};
   renderParts();
-  const labels={name:'파트명',qty:'수량',recommend:'추천 공법',process:'공법',material:'재질',input:'입력값',margin:'마진',quote:'견적가'};
+  const labels={name:'파트명',qty:'수량',recommend:'추천 공법',process:'공법',material:'재질',input:'입력값',extra:'기타공수',margin:'마진',quote:'견적가'};
   flash('info',`${labels[key]||key} 기준으로 같은 조건끼리 묶었습니다.`);
 }
 function partSortValue(p,key){
@@ -849,6 +851,7 @@ function partSortValue(p,key){
   if(key==='process') return `${processLabel(p.process)}_${p.name||''}`;
   if(key==='material') return `${p.material||''}_${p.name||''}`;
   if(key==='input') return p.process==='purchase'?num(p.purchaseUnit||p.inputValue,0):num(p.inputValue,0);
+  if(key==='extra') return num(p.extraCost,0);
   if(key==='margin') return num(p.margin,0);
   if(key==='quote') return num(p.quote,0);
   return '';
@@ -876,7 +879,7 @@ function updateStats(){ $('statParts').textContent=state.parts.length; $('statTo
 function renderParts(){
   updateSortHeaders();
   const body=$('partsBody');
-  if(!state.parts.length){body.innerHTML='<tr><td colspan="9" class="empty-row">업로드 후 파트가 표시됩니다.</td></tr>';return;}
+  if(!state.parts.length){body.innerHTML='<tr><td colspan="10" class="empty-row">업로드 후 파트가 표시됩니다.</td></tr>';return;}
   body.innerHTML=sortedParts().map(p=>rowHTML(p)).join('');
   body.querySelectorAll('tr[data-id]').forEach(bindRowEvents);
 }
@@ -912,6 +915,7 @@ function updateRowPrice(part){
     if(price) price.textContent=won(part.quote);
     const qty=row.querySelector('[data-act="qty"]'); if(qty && document.activeElement!==qty) qty.value=part.qty;
     const inp=row.querySelector('[data-act="input"]'); if(inp && document.activeElement!==inp) inp.value=part.process==='purchase'?num(part.purchaseUnit||part.inputValue):num(part.inputValue);
+    const ext=row.querySelector('[data-act="extra"]'); if(ext && document.activeElement!==ext) ext.value=num(part.extraCost,0);
     const mar=row.querySelector('[data-act="margin"]'); if(mar && document.activeElement!==mar) mar.value=part.margin;
   }
   updateSelectedLive(part);
@@ -940,6 +944,7 @@ function rowHTML(p){
     <td><select data-act="process" data-id="${p.id}">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></td>
     <td><select data-act="material" data-id="${p.id}">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></td>
     <td><label class="status-small">${inputLabel}</label><input data-act="input" data-id="${p.id}" value="${inputVal}"></td>
+    <td><label class="status-small">원</label><input data-act="extra" data-id="${p.id}" value="${num(p.extraCost,0)}"></td>
     <td><input data-act="margin" data-id="${p.id}" value="${p.margin}"></td>
     <td class="price">${won(p.quote)}</td>
     <td><button class="delbtn" data-id="${p.id}">삭제</button></td>
@@ -952,6 +957,7 @@ function handleCell(el,opts={}){
   if(act==='process'){ applyProcess(p,el.value); replaceRow(p); renderSelected(); updateStats(); return; }
   if(act==='material') p.material=el.value;
   if(act==='input'){ if(p.process==='purchase') p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0); }
+  if(act==='extra') p.extraCost=num(el.value,0);
   if(act==='margin') p.margin=num(el.value,0);
   recalcPart(p);
   updateStats();
@@ -966,7 +972,7 @@ function selectPart(id){
   if(p)showPart(p);
 }
 function removePart(id){state.parts=state.parts.filter(p=>p.id!==id); if(state.selectedId===id)state.selectedId=state.parts[0]?.id||null; recalcAll(); renderAll(); if(state.selectedId)showPart(selectedPart());}
-function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual'},state.parts.length); p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll();}
+function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual'},state.parts.length); p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); p.extraCost=0; recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll();}
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
@@ -980,6 +986,7 @@ function renderSelected(){
       <label>공법<select id="sideProcess" data-side-act="process">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></label>
       <label>재질<select id="sideMaterial" data-side-act="material">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></label>
       <label>${inputLabel}<input id="sideInput" data-side-act="input" value="${inputVal}"></label>
+      <label>기타공수(비용+)<input id="sideExtra" data-side-act="extra" value="${num(p.extraCost,0)}"></label>
       <label>마진%<input id="sideMargin" data-side-act="margin" value="${p.margin}"></label>
       <label>예상중량 kg/개<input id="sideWeight" data-side-act="weight" value="${kgEach(p).toFixed(4)}"></label>
       <label>크기 mm<input value="${esc(dims||'-')}" disabled></label>
@@ -998,6 +1005,7 @@ function handleSideEdit(el,opts={}){
   if(act==='process'){ applyProcess(p,el.value); replaceRow(p); renderSelected(); updateStats(); return; }
   if(act==='material') p.material=el.value;
   if(act==='input'){ if(p.process==='purchase') p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0); }
+  if(act==='extra') p.extraCost=num(el.value,0);
   if(act==='margin') p.margin=num(el.value,0);
   if(act==='weight') p.manualWeight=num(el.value,null);
   recalcPart(p);
@@ -1007,7 +1015,7 @@ function handleSideEdit(el,opts={}){
 }
 function syncSideInputs(p, changedAct){
   if(!p || p.id!==state.selectedId) return;
-  const map={qty:'sideQty',material:'sideMaterial',input:'sideInput',margin:'sideMargin'};
+  const map={qty:'sideQty',material:'sideMaterial',input:'sideInput',extra:'sideExtra',margin:'sideMargin'};
   const id=map[changedAct];
   if(id){ const el=$(id); if(el && document.activeElement!==el){
     if(changedAct==='input') el.value=p.process==='purchase'?num(p.purchaseUnit||p.inputValue):num(p.inputValue);
@@ -1016,7 +1024,7 @@ function syncSideInputs(p, changedAct){
 }
 function syncRowInputs(p, changedAct){
   const row=document.querySelector(`tr[data-id="${CSS.escape(p.id)}"]`); if(!row) return;
-  const map={qty:'qty',material:'material',input:'input',margin:'margin'};
+  const map={qty:'qty',material:'material',input:'input',extra:'extra',margin:'margin'};
   const act=map[changedAct]; if(!act) return;
   const el=row.querySelector(`[data-act="${act}"]`);
   if(el && document.activeElement!==el){
@@ -1041,7 +1049,7 @@ function renderMarginRates(){
 }
 function downloadRates(){downloadText('factory_rates.json',JSON.stringify(state.rates,null,2));}
 async function loadRatesFile(f){try{state.rates=mergeRates(structuredClone(DEFAULT_RATES),JSON.parse(await f.text())); renderRates(); recalcAll(); renderParts(); renderSelected(); flash('ok','단가표를 불러왔습니다.');}catch(e){flash('err','단가표 파일을 읽지 못했습니다.');}}
-function downloadCSV(){const header=['파트','수량','공법','재질','입력값','마진%','견적가']; const rows=state.parts.map(p=>[p.name,p.qty,processLabel(p.process),p.material,p.process==='purchase'?p.purchaseUnit:p.inputValue,p.margin,p.quote]); downloadText('quote.csv',[header,...rows].map(r=>r.map(csvCell).join(',')).join('\n'));}
+function downloadCSV(){const header=['파트','수량','공법','재질','입력값','기타공수(비용+)','마진%','견적가']; const rows=state.parts.map(p=>[p.name,p.qty,processLabel(p.process),p.material,p.process==='purchase'?p.purchaseUnit:p.inputValue,num(p.extraCost,0),p.margin,p.quote]); downloadText('quote.csv',[header,...rows].map(r=>r.map(csvCell).join(',')).join('\n'));}
 function csvCell(v){return '"'+String(v??'').replace(/"/g,'""')+'"';}
 function downloadText(name,text){const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
