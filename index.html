@@ -10,7 +10,7 @@
   <header class="topbar">
     <div>
       <h1>STEP 견적 자동 산출</h1>
-      <p>파트를 불러오고, 공장 단가표 기준으로 견적을 계산합니다.</p>
+      <p>어셈블리는 표시하지 않고, 선택한 파트만 보면서 견적을 계산합니다.</p>
     </div>
     <span class="badge">공장용</span>
   </header>
@@ -23,8 +23,7 @@
         <div id="dropZone" class="dropzone">파일을 끌어다 놓아도 됩니다</div>
       </section>
 
-      <section class="summary-grid">
-        <div><strong id="statAssembly">-</strong><span>어셈블리</span></div>
+      <section class="summary-grid compact">
         <div><strong id="statParts">0</strong><span>파트 수</span></div>
         <div><strong id="statMeshes">0</strong><span>3D 형상</span></div>
         <div><strong id="statTotal">0원</strong><span>총 견적</span></div>
@@ -36,14 +35,13 @@
         <div class="section-head">
           <div>
             <h2>3D 뷰어</h2>
-            <p>파트 행을 누르면 해당 파트만 표시됩니다.</p>
+            <p>어셈블리 전체는 숨기고, 선택한 파트만 표시합니다.</p>
           </div>
           <div class="button-row">
-            <button id="showAllBtn" type="button">전체 보기</button>
-            <button id="fitBtn" type="button">화면 맞춤</button>
+            <button id="fitBtn" type="button">선택 파트 맞춤</button>
           </div>
         </div>
-        <div id="viewer" class="viewer"><div class="empty-view">STEP 파일을 업로드하세요.</div></div>
+        <div id="viewer" class="viewer"><div class="empty-view">STEP 파일을 업로드하면 선택한 파트만 표시됩니다.</div></div>
       </section>
 
       <section class="table-card">

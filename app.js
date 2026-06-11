@@ -59,7 +59,6 @@ function initUpload(){
 function bindActions(){
   $('recalcBtn').addEventListener('click',()=>{ recalcAll(); renderParts(); renderSelected(); });
   $('exportCsvBtn').addEventListener('click', exportCsv);
-  $('showAllBtn').addEventListener('click', showAllMeshes);
   $('fitBtn').addEventListener('click', fitCamera);
   $('saveRatesBtn').addEventListener('click', saveRatesToBrowser);
   $('downloadRatesBtn').addEventListener('click', downloadRates);
@@ -98,16 +97,16 @@ function buildThreeMeshes(meshes){
       const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3)); if(m.attributes.normal) g.setAttribute('normal', new THREE.Float32BufferAttribute(m.attributes.normal.array,3)); g.setIndex(new THREE.BufferAttribute(Uint32Array.from(ind),1)); g.computeVertexNormals(); g.computeBoundingBox(); g.computeBoundingSphere();
       const mat=new THREE.MeshPhongMaterial({color:color(idx),shininess:20}); const mesh=new THREE.Mesh(g,mat); mesh.name=m.name||`MESH_${idx+1}`;
       const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,28),new THREE.LineBasicMaterial({color:0x0b1220,transparent:true,opacity:.38}));
-      const group=new THREE.Group(); group.name=mesh.name; group.add(mesh); group.add(edges); root.add(group);
+      const group=new THREE.Group(); group.name=mesh.name; group.visible=false; group.add(mesh); group.add(edges); root.add(group);
       const metrics=computeMeshMetrics(m,g);
       state.meshObjects.push({group,mesh,raw:m,name:mesh.name,norm:norm(mesh.name),metrics});
       if(norm(mesh.name)) state.meshByNorm.set(norm(mesh.name), group);
     }catch(e){ console.warn('mesh build fail', e); }
   });
-  fitCamera();
 }
 function color(i){return [0x92b4ff,0x9cf6d0,0xffd166,0xffaaa5,0xc4b5fd,0x93c5fd,0xfcd34d,0xa7f3d0][i%8];}
 function showAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=true); state.selectedId=null; fitCamera(false); }
+function hideAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=false); }
 function showPart(part){
   if(!part) return;
   state.meshObjects.forEach(o=>o.group.visible=false);
@@ -123,8 +122,10 @@ function showPart(part){
     }
   }
   if(!shown){
-    // 형상 매칭이 없는 파트는 전체를 보여주되, 표/우측 패널에서 수정 가능하게 둔다.
-    state.meshObjects.forEach(o=>o.group.visible=true);
+    // 매칭 형상이 없으면 어셈블리 전체를 보여주지 않는다.
+    hideAllMeshes();
+    setMessage('warn', `${part.name} 형상을 찾지 못했습니다. 표에서는 견적 입력이 가능합니다.`);
+    return;
   }
   fitCamera(true);
 }
@@ -167,7 +168,7 @@ async function handleFile(file){
     state.assemblyName=textInfo.assemblyName || baseFileName(file.name);
     state.parts=parts.map((p,i)=>initPart(p,i)).filter(Boolean);
     if(!state.parts.length) setMessage('err','파트를 찾지 못했습니다. 파싱 진단을 확인하세요.'); else setMessage('ok',`분석 완료: 파트 ${state.parts.length}종을 불러왔습니다.`);
-    state.selectedId=state.parts[0]?.id||null; recalcAll(); renderParts(); renderSelected(); updateStats(); renderDebug({textInfo,occt}); showAllMeshes();
+    state.selectedId=state.parts[0]?.id||null; recalcAll(); renderParts(); renderSelected(); updateStats(); renderDebug({textInfo,occt}); if(state.selectedId){ showPart(state.parts[0]); } else { hideAllMeshes(); }
   }catch(e){ console.error(e); setMessage('err','파일 처리 오류: '+(e.message||e)); }
 }
 async function parseWithOcct(buffer){
@@ -436,6 +437,6 @@ async function importRatesFile(e){ const f=e.target.files?.[0]; if(!f)return; tr
 function copyRates(){ const txt=JSON.stringify(state.rates,null,2); $('ratesPaste').value=txt; navigator.clipboard?.writeText(txt); setMessage('ok','단가표 JSON을 복사했습니다.'); }
 function pasteRates(){ try{ const obj=JSON.parse($('ratesPaste').value); state.rates=obj; mergeDefaults(state.rates,DEFAULT_RATES); renderRateEditors(); syncMarginsFromRates(); recalcAll(); renderParts(); renderSelected(); setMessage('ok','붙여넣은 단가표를 적용했습니다.'); }catch{ setMessage('err','붙여넣은 내용이 올바른 JSON이 아닙니다.'); } }
 
-function updateStats(){ $('statAssembly').textContent=state.assemblyName||'-'; $('statParts').textContent=state.parts.length; $('statMeshes').textContent=state.meshObjects.length; $('statTotal').textContent=won(state.parts.reduce((s,p)=>s+p.quote,0)); }
+function updateStats(){ $('statParts').textContent=state.parts.length; $('statMeshes').textContent=state.meshObjects.length; $('statTotal').textContent=won(state.parts.reduce((s,p)=>s+p.quote,0)); }
 function renderDebug(obj){ $('debugPre').textContent=JSON.stringify(obj||state.debug,null,2); }
 function exportCsv(){ const rows=[['파트','수량','공법','재질','예상kg/개','절곡수','시간/개','구매단가','마진%','견적가']].concat(state.parts.map(p=>[p.name,p.qty,PROCESS_LABELS[p.process],p.material,p.kgPerEa,p.bends,p.timePerEa,p.purchaseUnit,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote.csv'; a.click(); URL.revokeObjectURL(a.href); }
