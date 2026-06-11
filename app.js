@@ -116,7 +116,9 @@ async function handleFile(file){
       $('viewerStatus').textContent = 'OCCT mesh 파싱 실패. 파트 목록은 STEP 텍스트에서 추출했습니다.';
     }
 
-    state.parts = state.parts.map((p, idx) => enrichPart(p, idx));
+    state.parts = state.parts
+      .filter(p => p && p.name && !isBadName(p.name) && !isNumberishName(p.name) && !/^PRODUCT_DEFINITION/i.test(p.name))
+      .map((p, idx) => enrichPart(p, idx));
     recalcAll();
     state.selectedId = state.parts[0]?.id || null;
     renderParts(); renderSelected(); updateStats(); renderDebug(); showAllMeshes();
@@ -237,17 +239,23 @@ function computeMeshMetrics(rawMesh, geom){
 // 목표: "얇은 판재 + 꺾여 나온 플랜지/귀/탭"을 절곡 후보로 세고,
 // 작고 닫힌 원통/구멍벽 성분은 홀·탭 후보로 분리한다.
 // 확정값이 아니라 공장 수정용 초기값이다.
+
+// 판금 특징 추정 V12
+// 핵심 변경:
+// 1) 얇은 판재에서 기준판을 제외한 큰 연결 패치 수를 절곡 후보로 본다.
+// 2) 원형/타원형으로 보이는 작고 compact한 곡면 성분은 전부 홀 후보로 본다.
+// 3) 이 값은 확정 견적이 아니라 공장장이 수정하는 자동 초기값이다.
 function estimateSheetFeaturesFromTriangles(pos, idx, metrics, totalArea){
   const out = {bends:0, holes:0, debug:'', holeDebug:''};
   try{
     if(!pos || !idx || idx.length < 9 || !metrics) return out;
-    const minDim = Number(metrics.minDim)||0, maxDim=Number(metrics.maxDim)||0, midDim=Number(metrics.midDim)||0;
-    const sheetCandidate = minDim>0 && minDim<=10 && maxDim/minDim>4.8 && midDim/minDim>1.6;
+    const minDim = Number(metrics.minDim)||0, midDim=Number(metrics.midDim)||0, maxDim=Number(metrics.maxDim)||0;
+    const sheetCandidate = minDim>0 && minDim<=12 && maxDim/minDim>4.0 && midDim/minDim>1.4;
     if(!sheetCandidate) return out;
 
     const maxTris = Math.floor(idx.length/3);
-    const sampleStep = Math.max(1, Math.floor(maxTris/32000));
-    const triList = [];
+    const sampleStep = Math.max(1, Math.floor(maxTris/45000));
+    const tris = [];
     const dirArea = new Map();
     let sampledArea = 0;
 
@@ -262,35 +270,36 @@ function estimateSheetFeaturesFromTriangles(pos, idx, metrics, totalArea){
       let nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
       const len=Math.hypot(nx,ny,nz); if(len<=1e-9) continue;
       const area=(len/2)*sampleStep; if(area<=0) continue;
-      // signed normal for component geometry, absolute normal for base-plane direction.
-      const sx=nx/len, sy=ny/len, sz=nz/len;
+      let sx=nx/len, sy=ny/len, sz=nz/len;
+      // sign canonical for stable grouping, while absolute normal is used to merge front/back of sheet.
       const axn=Math.abs(sx), ayn=Math.abs(sy), azn=Math.abs(sz);
-      const dirKey=`${Math.round(axn/0.12)}:${Math.round(ayn/0.12)}:${Math.round(azn/0.12)}`;
+      const dirKey=`${Math.round(axn/0.10)}:${Math.round(ayn/0.10)}:${Math.round(azn/0.10)}`;
       const cxm=(ax+bx+cx)/3, cym=(ay+by+cy)/3, czm=(az+bz+cz)/3;
-      triList.push({x:cxm,y:cym,z:czm,sx,sy,sz,ax:axn,ay:ayn,az:azn,dirKey,area});
+      tris.push({x:cxm,y:cym,z:czm,sx,sy,sz,ax:axn,ay:ayn,az:azn,dirKey,area});
       sampledArea += area;
       const d=dirArea.get(dirKey)||{area:0, ax:axn, ay:ayn, az:azn}; d.area+=area; dirArea.set(dirKey,d);
     }
-    if(!triList.length || !dirArea.size) return out;
+    if(!tris.length || !dirArea.size) return out;
+
     const dirs=[...dirArea.values()].sort((a,b)=>b.area-a.area);
     const base=dirs[0];
     if(!base) return out;
     const dotBaseAbs = tr => Math.abs(tr.ax*base.ax + tr.ay*base.ay + tr.az*base.az);
 
-    // base 판면과 다른 방향의 삼각형만 후보로. base와 평행한 내/외측 큰 면은 제외.
-    const candidates = triList.filter(tr => dotBaseAbs(tr) < 0.86);
+    // 기준판과 다른 방향인 삼각형만 절곡/홀 후보로 본다.
+    // 90도 플랜지, 사선 플랜지, 원형 홀 벽면이 여기에 들어온다.
+    const candidates = tris.filter(tr => dotBaseAbs(tr) < 0.92);
     if(!candidates.length){
-      out.debug = `sheet ok, but no non-base patches; baseDir=${base.ax.toFixed(2)},${base.ay.toFixed(2)},${base.az.toFixed(2)}`;
+      out.debug = `sheet ok, no non-base patch; base=${base.ax.toFixed(2)},${base.ay.toFixed(2)},${base.az.toFixed(2)}`;
       return out;
     }
 
-    // centroid component clustering. 작은 구멍벽/모따기와 큰 플랜지를 분리하기 위해 3D 위치 기반으로 연결 성분을 만든다.
-    const eps = Math.max(8, Math.min(55, Math.max(minDim*10, maxDim*0.035)));
+    // 위치 기반 연결 성분. 큰 플랜지와 작은 원형홀을 분리하기 위해 eps를 과하게 키우지 않는다.
+    const eps = Math.max(5, Math.min(42, Math.max(minDim*8, maxDim*0.022)));
     const parent = Array.from({length:candidates.length},(_,i)=>i);
     const find=i=>{ while(parent[i]!==i){ parent[i]=parent[parent[i]]; i=parent[i]; } return i; };
     const unite=(a,b)=>{ const ra=find(a), rb=find(b); if(ra!==rb) parent[rb]=ra; };
     const buckets = new Map();
-    const keyFor = (tr) => `${Math.floor(tr.x/eps)}:${Math.floor(tr.y/eps)}:${Math.floor(tr.z/eps)}`;
     for(let i=0;i<candidates.length;i++){
       const tr=candidates[i];
       const bx=Math.floor(tr.x/eps), by=Math.floor(tr.y/eps), bz=Math.floor(tr.z/eps);
@@ -299,19 +308,19 @@ function estimateSheetFeaturesFromTriangles(pos, idx, metrics, totalArea){
         for(const j of arr){
           const ot=candidates[j];
           const dist=Math.hypot(tr.x-ot.x,tr.y-ot.y,tr.z-ot.z);
-          // 같은 방향/근접한 면을 주로 묶고, R면은 근접하면 연결되게 둔다.
           const ndot=Math.abs(tr.sx*ot.sx + tr.sy*ot.sy + tr.sz*ot.sz);
-          if(dist <= eps && ndot > 0.35) unite(i,j);
+          // 플랜지는 같은 방향으로 넓게 붙고, 홀 벽면은 방향이 달라도 아주 가까이 붙어 있다.
+          if(dist <= eps && (ndot > 0.30 || dist <= eps*0.55)) unite(i,j);
         }
       }
-      const k=keyFor(tr); if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(i);
+      const k=`${bx}:${by}:${bz}`; if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(i);
     }
 
     const comps = new Map();
     for(let i=0;i<candidates.length;i++){
       const r=find(i), tr=candidates[i];
-      const c=comps.get(r)||{area:0,count:0,minx:Infinity,maxx:-Infinity,miny:Infinity,maxy:-Infinity,minz:Infinity,maxz:-Infinity, dirs:new Map()};
-      c.area += tr.area; c.count += 1;
+      const c=comps.get(r)||{area:0,count:0,minx:Infinity,maxx:-Infinity,miny:Infinity,maxy:-Infinity,minz:Infinity,maxz:-Infinity,dirs:new Map()};
+      c.area+=tr.area; c.count++;
       if(tr.x<c.minx)c.minx=tr.x; if(tr.x>c.maxx)c.maxx=tr.x;
       if(tr.y<c.miny)c.miny=tr.y; if(tr.y>c.maxy)c.maxy=tr.y;
       if(tr.z<c.minz)c.minz=tr.z; if(tr.z>c.maxz)c.maxz=tr.z;
@@ -322,37 +331,43 @@ function estimateSheetFeaturesFromTriangles(pos, idx, metrics, totalArea){
     const compList=[...comps.values()].map(c=>{
       const sx=c.maxx-c.minx, sy=c.maxy-c.miny, sz=c.maxz-c.minz;
       const spans=[sx,sy,sz].sort((a,b)=>a-b);
-      const spanMax=spans[2]||0, spanMid=spans[1]||0, spanMin=spans[0]||0;
-      const dirCount=[...c.dirs.values()].filter(v=>c.area>0 && v/c.area>0.18).length;
-      return {...c,sx,sy,sz,spanMax,spanMid,spanMin,dirCount};
+      const dirCount=[...c.dirs.values()].filter(v=>c.area>0 && v/c.area>0.12).length;
+      return {...c,sx,sy,sz,spanMin:spans[0]||0,spanMid:spans[1]||0,spanMax:spans[2]||0,dirCount};
     });
 
-    // 큰 플랜지/꺾인 귀: 총면적에 비해 너무 작지 않고, 길게 뻗은 성분.
-    const minFlangeArea = Math.max(60, sampledArea*0.004);
-    const flangeComps = compList.filter(c => {
-      const longEnough = c.spanMax >= Math.max(10, minDim*5);
-      const notTinyHole = !(c.spanMax < Math.max(18, minDim*14) && c.spanMid < Math.max(18, minDim*14));
-      return c.area >= minFlangeArea && longEnough && notTinyHole;
-    });
-
-    // 구멍/타공벽: 작고 compact하면서 원형 벽처럼 여러 방향 normal을 가진 성분.
+    // 홀 후보: 원형/타원형 구멍 벽면은 작고 compact하며 여러 normal 방향을 가진다.
+    // 사용자가 말한 기준대로, 판금에서 보이는 원형은 전부 홀 후보로 잡는다.
+    const holeMax = Math.max(18, Math.min(90, minDim*38));
     const holeComps = compList.filter(c => {
-      const compact = c.spanMax <= Math.max(42, minDim*24) && c.spanMid <= Math.max(42, minDim*24);
-      const notTooSmall = c.area >= Math.max(8, sampledArea*0.00012);
-      const multiDir = c.dirCount >= 2 || c.count >= 8;
-      return compact && notTooSmall && multiDir;
+      const compact = c.spanMax <= holeMax && c.spanMid <= holeMax;
+      const enoughArea = c.area >= Math.max(3, sampledArea*0.000035);
+      const curvedLike = c.dirCount >= 2 || c.count >= 5;
+      const notLongFlange = c.spanMax / Math.max(1,c.spanMid) < 3.2;
+      return compact && enoughArea && curvedLike && notLongFlange;
     });
 
-    // 과소검출 보정: 넓은 판 + 네 귀/구멍 형태는 보통 4개가 보인다. 컴포넌트가 3~5개 근처면 4로 스냅.
+    // 절곡 후보: 기준판에서 꺾여 나온 큰 플랜지/연결판 패치.
+    // compact한 홀 후보는 제외하고, 길게 뻗은 패치만 센다.
+    const minFlangeArea = Math.max(40, sampledArea*0.0012);
+    const flangeComps = compList.filter(c => {
+      if(holeComps.includes(c)) return false;
+      const longPatch = c.spanMax >= Math.max(18, minDim*9);
+      const notTiny = c.area >= minFlangeArea;
+      const flangeShape = c.spanMax / Math.max(1,c.spanMid) >= 1.15 || c.area >= sampledArea*0.006;
+      return longPatch && notTiny && flangeShape;
+    });
+
     let bendCount = flangeComps.length;
     let holeCount = holeComps.length;
-    if(bendCount===3 && maxDim/minDim>20) bendCount=4;
-    if(holeCount===3 && maxDim/minDim>20) holeCount=4;
+
+    // 너무 잘게 쪼개진 플랜지 병합: 실제 작업에서는 가까운 같은 방향 패치 2~3개가 한 번 절곡인 경우가 많다.
+    // 단, 사용자가 지적한 것처럼 분리된 귀/플랜지는 각각 절곡으로 남긴다.
+    if(bendCount > 12) bendCount = Math.round(bendCount/2);
 
     out.bends = Math.max(0, Math.min(16, bendCount));
-    out.holes = Math.max(0, Math.min(64, holeCount));
-    out.debug = `baseDir=${base.ax.toFixed(2)},${base.ay.toFixed(2)},${base.az.toFixed(2)} comps=${compList.length} flange=${flangeComps.length} eps=${eps.toFixed(1)}`;
-    out.holeDebug = `holeComps=${holeComps.length}`;
+    out.holes = Math.max(0, Math.min(96, holeCount));
+    out.debug = `sheetV12 base=${base.ax.toFixed(2)},${base.ay.toFixed(2)},${base.az.toFixed(2)} comps=${compList.length} flanges=${flangeComps.length} eps=${eps.toFixed(1)}`;
+    out.holeDebug = `roundHoleComps=${holeComps.length}`;
     return out;
   }catch(e){
     console.warn('sheet feature estimate fail', e);
@@ -614,41 +629,34 @@ function deriveFeatures(name, metrics){
   let thickness = preset.thickness || tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
   const sheetGeometry = preset.forceSheet || ((flatPlateLike || shellLike || (sheetNameHint && minDim>0 && minDim<=8)) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName && !purchaseName);
 
-  // V9 절곡 기준
-  // 실제 STEP mesh에서 플랜지 패치가 잡히면 그 값을 우선한다.
-  // 다만 HOOD_BODY류처럼 큰 기준판 + 좌우/상하 귀가 있는 판금은 exporter가 한 방향으로만 tessellation되어 patch가 0으로 떨어질 수 있어,
-  // 제품명과 판재형 치수를 함께 보고 기본 후보를 보정한다. 자동값은 "확정"이 아니라 공장 수정용 초기값이다.
+  // V12 절곡 기준
+  // mesh에서 실제 플랜지 패치가 잡히면 그 값을 1순위로 사용한다.
+  // 이름별 기본값은 mesh 검출이 0일 때만 fallback으로 사용한다.
   let bends = 0;
   const patchBends = Number(m.bendPatchCount)||0;
   const directionBasedBends = sheetGeometry && majorPlaneDirections >= 2 ? Math.max(1, Math.min(8, majorPlaneDirections - 1)) : 0;
-  if(preset.bends != null) bends = Math.max(bends, Number(preset.bends)||0);
-  if(sheetGeometry && patchBends > 0) bends = Math.max(bends, patchBends);
-  if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) bends = Math.max(bends, 4);
-  else if(sheetGeometry && /TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)) bends = Math.max(bends, 4);
-  else if(sheetGeometry && /WATER[_ -]?BOTTLE.*(SIDE|TOP)|SIDE.*WATER[_ -]?BOTTLE/.test(n)) bends = Math.max(bends, 2);
-  else if(sheetGeometry && bendNameHint) bends = Math.max(bends, directionBasedBends || 1);
-  else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = Math.max(bends, directionBasedBends);
-  else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.20) bends = Math.max(bends, majorPlaneDirections - 2);
+  if(sheetGeometry && patchBends > 0) bends = patchBends;
+  else if(preset.bends != null) bends = Number(preset.bends)||0;
+  else if(sheetGeometry && bendNameHint) bends = directionBasedBends || 1;
+  else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = directionBasedBends;
+  else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.20) bends = Math.max(1, majorPlaneDirections - 2);
   if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends = Math.max(bends,2);
   if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends = Math.max(bends,1);
-  bends = Math.max(0, Math.min(12, Math.round(bends)));
+  bends = Math.max(0, Math.min(16, Math.round(bends)));
 
-  // V9 홀/탭 후보 기준
-  // STEP mesh만으로는 나사산인지 단순 홀인지 확정 불가. 그래서 이 값은 "홀/탭 후보"로 표시하고,
-  // 판금이면 타공비, CNC/선반/프로파일이면 탭비로 계산한다. 공장이 최종 수정한다.
+  // V12 홀/탭 후보 기준
+  // 판금에서 보이는 원형/타원형 구멍은 모두 홀 후보로 넣는다.
+  // CNC/선반/프로파일에서는 같은 숫자를 탭/홀 가공 후보로 쓴다.
   let holeCandidates = Math.max(0, Number(m.holeCandidateCount)||0);
-  if(preset.holes != null) holeCandidates = Math.max(holeCandidates, Number(preset.holes)||0);
   if(!purchaseName){
+    if(holeCandidates === 0 && preset.holes != null) holeCandidates = Number(preset.holes)||0;
     if(/TAP|M\d+/.test(n)) holeCandidates = Math.max(holeCandidates, 1);
-    if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) holeCandidates = Math.max(holeCandidates, 4);
-    else if(sheetGeometry && /TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)) holeCandidates = Math.max(holeCandidates, 4);
-    else if(sheetGeometry && /WATER[_ -]?BOTTLE.*(SIDE|TOP)|SIDE.*WATER[_ -]?BOTTLE/.test(n)) holeCandidates = Math.max(holeCandidates, 2);
-    else if(sheetGeometry && sheetNameHint && maxDim>150) holeCandidates = Math.max(holeCandidates, 2);
-    if(sheetGeometry && normalClusterCount>=8) holeCandidates = Math.max(holeCandidates, Math.min(12, Math.round((normalClusterCount-5)/2)));
+    if(holeCandidates === 0 && sheetGeometry && normalClusterCount>=8) holeCandidates = Math.max(holeCandidates, Math.min(16, Math.round((normalClusterCount-5)/2)));
+    if(holeCandidates === 0 && sheetGeometry && sheetNameHint && maxDim>150) holeCandidates = 2;
   }
   const taps = Math.max(0, Math.round(holeCandidates));
-  const holeDebug = purchaseName ? '구매품은 홀/탭 자동 0' : (taps>0 ? `홀/탭 후보 ${taps}개: ${m.holeCandidateCount?'mesh 구멍벽/판금 형상':'이름/판금 형상'} 기준 초기값` : '홀/탭 후보 없음');
-  const bendDebug = bends>0 ? `절곡 후보 ${bends}회: ${patchBends>0?'mesh 플랜지 패치':'판금명/형상 보정'} 기준 초기값` : '절곡 후보 없음';
+  const holeDebug = purchaseName ? '구매품은 홀/탭 자동 0' : (taps>0 ? `원형/타원형 홀 후보 ${taps}개: ${m.holeCandidateCount?'mesh 원형 성분':'fallback'} 기준 초기값` : '홀 후보 없음');
+  const bendDebug = bends>0 ? `절곡 후보 ${bends}회: ${patchBends>0?'mesh 플랜지 패치':'fallback'} 기준 초기값` : '절곡 후보 없음';
   return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends, holeDebug, bendDebug, presetNote:preset.note, forceSheet:preset.forceSheet, forcePurchase:preset.forcePurchase, presetMaterial:preset.material};
 }
 

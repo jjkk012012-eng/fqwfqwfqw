@@ -1,15 +1,13 @@
-공장용 STEP 견적 계산기 V11
+공장용 STEP 견적 계산기 V12
 
-이번 버전 핵심
-- OCCT 실제 mesh 뷰어 유지
-- #82708 같은 숫자 leaf/가짜 PRODUCT_DEFINITION 행 제거
-- 실제 mesh 이름과 PRODUCT 이름을 다시 매칭
-- 판금 분석을 이름 고정값이 아니라 mesh 기반으로 보강
-- 얇은 판재에서 기준판과 다른 방향의 연결 성분을 클러스터링해 절곡 후보 계산
-- 작은 compact 성분을 홀/탭 후보로 분리
-- HOOD_SKEL/HOOD_BODY처럼 판금류는 mesh 결과와 기본 규칙을 함께 적용
-- 모든 값은 공장 수정용 초기값이며, 표에서 바로 수정 가능
+핵심 변경
+- 공장장용 간편 레이아웃으로 정리했습니다.
+- STEP/STP 업로드 후 말단 파트만 표에 표시합니다.
+- 파트 클릭 시 해당 3D mesh만 단독 표시합니다.
+- 판금은 mesh 기준으로 원형/타원형 성분을 홀 후보로 계산합니다.
+- 판금은 기준판에서 꺾여 나온 플랜지/연결 패치를 절곡 후보로 계산합니다.
+- 절곡/홀 값은 자동 초기값이며, 표에서 바로 수정할 수 있습니다.
+- 구매품, 프로파일, 선반, 판금/절곡, CNC/MCT 순서로 분류합니다.
 
-GitHub Pages 업로드 방법
-ZIP 안의 내용물(index.html, styles.css, app.js, README.txt, data, vendor)을 저장소 root에 넣고 Commit/Push 하세요.
-압축 폴더째 넣으면 안 됩니다.
+업로드
+index.html, styles.css, app.js, README.txt, data 폴더, vendor 폴더를 GitHub 저장소 root에 넣으세요.

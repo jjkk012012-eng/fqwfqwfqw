@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>공장용 STEP 견적 계산기 - V11 판금 분석 강화</title>
+  <title>공장용 STEP 견적 계산기 - V12 간편판금</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>공장용 STEP 견적 계산기</h1>
-      <p>STEP/STP 실제 mesh와 파트명을 기준으로 공법을 점수화하고, 공장이 최종 수정합니다.</p>
+      <p>STEP 파일을 올리면 말단 파트를 뽑고, 홀·절곡 초기값을 채운 뒤 공장이 바로 수정합니다.</p>
     </div>
     <span class="pill">플랫폼 수수료 0원</span>
   </header>
@@ -43,7 +43,7 @@
         <div class="card-title-row">
           <div>
             <h2>3D 뷰어</h2>
-            <p id="viewerStatus">OCCT 파싱 성공 시 전체 mesh를 표시합니다. 파트 행을 누르면 해당 mesh를 단독 표시합니다.</p>
+            <p id="viewerStatus">파트를 누르면 해당 형상만 크게 표시합니다. 원형 형상은 홀 후보, 플랜지는 절곡 후보로 초기 입력됩니다.</p>
           </div>
           <div class="actions">
             <button id="showAllBtn" type="button">전체 보기</button>
@@ -67,7 +67,7 @@
               <tr>
                 <th>파트명</th>
                 <th>수량</th>
-                <th>자동추천 / 근거</th>
+                <th>추천</th>
                 <th>공법</th>
                 <th>재질</th>
                 <th>두께</th>
@@ -84,8 +84,8 @@
         </div>
       </section>
 
-      <details class="diagnostics" open>
-        <summary>파싱 진단 / 원본 구조 확인</summary>
+      <details class="diagnostics">
+        <summary>고급 진단 보기</summary>
         <pre id="debugPre">대기 중</pre>
       </details>
     </section>
