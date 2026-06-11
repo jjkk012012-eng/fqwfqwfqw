@@ -3,7 +3,7 @@ const nf = new Intl.NumberFormat('ko-KR');
 const PROCESS_LABELS = {purchase:'구매품', sheet:'판금/절곡', cnc:'CNC/MCT', lathe:'선반', injection:'사출', print3d:'3D프린팅', profile:'압출/프로파일', unknown:'분류 필요'};
 const MATERIALS = ["AL6061", "AL5052", "AL7075", "SUS304", "SUS316", "SUS430", "SS400", "S45C", "SCM440", "SKD11", "SPCC", "SPHC", "SECC", "SGCC", "C3604", "C1100", "ABS", "POM", "PC", "PP", "PE", "PA66", "MC_NYLON", "PLA", "PETG", "TPU", "PEEK"];
 const PROCESSES = ['purchase','sheet','cnc','lathe','injection','print3d','profile','unknown'];
-const state = {rates:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}};
+const state = {rates:null, rules:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}};
 const DEFAULT_RATES = {
   materials:{
       "AL6061": {
@@ -253,6 +253,10 @@ async function loadRates(){
     catch{ state.rates = structuredClone(DEFAULT_RATES); }
   }
   mergeDefaults(state.rates, DEFAULT_RATES);
+  try{
+    const rr = await fetch('data/process_rules_core.json');
+    if(rr.ok) state.rules = await rr.json();
+  }catch(e){ state.rules = null; }
 }
 function mergeDefaults(obj, def){ for(const k in def){ if(obj[k]===undefined) obj[k]=structuredClone(def[k]); else if(def[k] && typeof def[k]==='object' && !Array.isArray(def[k])) mergeDefaults(obj[k], def[k]); } }
 
@@ -558,6 +562,50 @@ function initPart(p,idx){
     margin:state.rates.process[process]?.margin??0, classInfo:classification, quote:0, costBreakdown:{}
   };
 }
+
+function applyRulePackScores(up, m, add, score){
+  const pack = state.rules?.processRules;
+  if(!pack) return;
+  for(const [process, rule] of Object.entries(pack)){
+    if(Array.isArray(rule.namePatterns)){
+      for(const item of rule.namePatterns){
+        try{
+          const re = new RegExp(item.pattern, 'i');
+          if(re.test(up)) add(process, item.points || 0, item.reason || `${process} 규칙`);
+        }catch(e){}
+      }
+    }
+    if(Array.isArray(rule.meshRules)){
+      for(const item of rule.meshRules){
+        const k = item.key;
+        const op = item.op || 'gt';
+        const val = Number(item.value);
+        const points = Number(item.points)||0;
+        const mv = Number(m?.[k]);
+        if(!Number.isFinite(mv)) continue;
+        let ok=false;
+        if(op==='gt') ok = mv > val;
+        else if(op==='gte') ok = mv >= val;
+        else if(op==='lt') ok = mv < val;
+        else if(op==='lte') ok = mv <= val;
+        else if(op==='eq') ok = mv === val;
+        if(ok) add(process, points, item.reason || `${process} 형상 규칙`);
+      }
+    }
+  }
+  const exclusive = state.rules?.exclusivePriority || [];
+  for(const item of exclusive){
+    try{
+      const re = new RegExp(item.pattern, 'i');
+      if(re.test(up)){
+        const p = item.process;
+        for(const k of Object.keys(score)) if(k!==p) score[k] -= item.penalty || 0;
+        score[p] += item.bonus || 0;
+      }
+    }catch(e){}
+  }
+}
+
 function classify(p){
   const name=String(p.name||'');
   const up=name.toUpperCase();
@@ -566,6 +614,7 @@ function classify(p){
   const score={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,injection:0,print3d:0};
   const reasons=[];
   const add=(k,v,r)=>{ score[k]+=v; if(r) reasons.push({process:k, text:r, points:v}); };
+  applyRulePackScores(up, m, add, score);
 
   // 1) 표준품/구매품: 장비·배관·체결류는 가공 공법보다 먼저 제외한다.
   const purchaseStrong = /BOLT|SCREW|HEX[_-]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|CHECK[_-]?VALVE|NIPPLE|PIPE|TUBE|PIE\d*|FITTING|COUPLER|COUPLING|ELBOW|TEE|HOSE|LEAD|SPRING|O[-_ ]?RING|HANDLE|LEVER|GRIP|KNOB|CYLINDER|DAMPER|GAS[_-]?SPRING|GSR/.test(up);
