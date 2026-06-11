@@ -3,71 +3,56 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>공장용 STEP 견적 계산기 V16 - 공장장 간편형</title>
+  <title>STEP 견적 자동 산출</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div>
-      <h1>공장용 STEP 견적 계산기 V16</h1>
-      <p>STEP 어셈블리는 상단에 고정하고, 말단 파트만 공법·재료·구매단가·절곡 여부를 수정해 견적을 확정합니다.</p>
+      <h1>STEP 견적 자동 산출</h1>
+      <p>STEP/STP 파일에서 파트를 불러오고, 공장 단가표 기준으로 견적을 계산합니다.</p>
     </div>
-    <span class="pill">플랫폼 수수료 0원</span>
+    <span class="badge">공장용</span>
   </header>
 
-  <main class="layout">
-    <section class="maincol">
-      <section class="upload-card">
-        <input id="stepFile" class="file-input" type="file" accept=".stp,.step,.STP,.STEP" />
-        <button id="selectFileBtn" class="upload-button" type="button">
-          STEP/STP 파일 선택
-        </button>
-        <div id="dropZone" class="drop-zone" role="button" tabindex="0">
-          <strong>또는 여기에 파일을 드래그하세요</strong>
-          <span>파일 선택 → 파트 클릭 → 공법, kg/개, 구매단가, 홀/타공, 절곡수만 수정하면 됩니다.</span>
-        </div>
+  <main class="page">
+    <section class="workspace">
+      <section class="upload-panel">
+        <input id="stepFile" type="file" accept=".stp,.step,.STP,.STEP" hidden />
+        <button id="selectFileBtn" class="primary" type="button">STEP/STP 파일 선택</button>
+        <div id="dropZone" class="dropzone">파일을 끌어다 놓아도 됩니다</div>
       </section>
 
-      <section class="stats-grid">
-        <div><b id="statParts">0</b><span>견적 대상 파트</span></div>
-        <div><b id="statAssemblies">0</b><span>제외 어셈블리</span></div>
-        <div><b id="statEntities">0</b><span>STEP 엔티티</span></div>
-        <div><b id="statMeshes">0</b><span>OCCT mesh</span></div>
-        <div><b id="statTotal">0원</b><span>총 견적</span></div>
-        <div><b id="statMode">대기</b><span>분석 모드</span></div>
+      <section class="summary-grid">
+        <div><strong id="statAssembly">-</strong><span>어셈블리</span></div>
+        <div><strong id="statParts">0</strong><span>파트 수</span></div>
+        <div><strong id="statMeshes">0</strong><span>3D 형상</span></div>
+        <div><strong id="statTotal">0원</strong><span>총 견적</span></div>
       </section>
 
-      <div id="message" class="message info">파일을 선택하면 분석을 시작합니다.</div>
-
-      <section id="assemblyBanner" class="assembly-banner">
-        <div>
-          <strong>어셈블리</strong>
-          <span id="assemblyName">파일 선택 전</span>
-        </div>
-        <div>
-          <strong>처리 기준</strong>
-          <span>어셈블리/서브어셈블리는 견적 제외, 말단 파트만 계산</span>
-        </div>
-      </section>
+      <div id="message" class="message">파일을 선택하면 분석을 시작합니다.</div>
 
       <section class="viewer-card">
-        <div class="card-title-row">
+        <div class="section-head">
           <div>
             <h2>3D 뷰어</h2>
-            <p id="viewerStatus">파트를 누르면 해당 형상만 표시합니다. 원형 루프는 홀 후보, 기준판에서 접힌 플랜지는 절곡 후보로 넣습니다.</p>
+            <p>파트 행을 누르면 해당 파트만 표시됩니다.</p>
           </div>
-          <div class="actions">
+          <div class="button-row">
             <button id="showAllBtn" type="button">전체 보기</button>
             <button id="fitBtn" type="button">화면 맞춤</button>
           </div>
         </div>
-        <div id="viewer" class="viewer"><div class="viewer-empty">STEP 파일을 업로드하세요.</div></div>
+        <div id="viewer" class="viewer"><div class="empty-view">STEP 파일을 업로드하세요.</div></div>
       </section>
 
       <section class="table-card">
-        <div class="card-title-row">
-          <h2>말단 파트 견적표</h2>
-          <div class="actions">
+        <div class="section-head">
+          <div>
+            <h2>파트 견적표</h2>
+            <p>자동 분류값은 초깃값입니다. 공법, kg/개, 시간/개, 절곡수, 홀수, 구매단가는 바로 수정할 수 있습니다.</p>
+          </div>
+          <div class="button-row">
             <button id="recalcBtn" type="button">전체 재계산</button>
             <button id="exportCsvBtn" type="button">CSV 내보내기</button>
           </div>
@@ -76,14 +61,13 @@
           <table>
             <thead>
               <tr>
-                <th>파트명</th>
+                <th>파트</th>
                 <th>수량</th>
-                <th>추천</th>
                 <th>공법</th>
                 <th>재질</th>
-                <th>두께</th>
                 <th>kg/개</th>
-                <th>홀/타공</th>
+                <th>시간/개</th>
+                <th>홀수</th>
                 <th>절곡수</th>
                 <th>구매단가</th>
                 <th>마진%</th>
@@ -91,35 +75,37 @@
               </tr>
             </thead>
             <tbody id="partsBody">
-              <tr><td colspan="12" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
+              <tr><td colspan="11" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
-
-      <details class="diagnostics">
-        <summary>고급 진단 보기</summary>
-        <pre id="debugPre">대기 중</pre>
-      </details>
     </section>
 
-    <aside class="sidecol">
-      <section class="side-card" id="selectedPanel">
-        <h2>선택 파트 검토</h2>
+    <aside class="side">
+      <section id="selectedPanel" class="card selected">
+        <h2>선택 파트</h2>
         <p class="muted">파트를 선택하세요.</p>
       </section>
 
-      <section class="side-card">
-        <h2>우리 공장 단가표</h2>
-        <h3>공법별 기본 마진</h3>
-        <div id="marginEditor" class="rate-list"></div>
-        <h3>재료 시세 + 할증</h3>
-        <div id="materialEditor" class="rate-list"></div>
-        <h3>공정별 단가</h3>
-        <div id="processEditor" class="rate-list compact-rate"></div>
+      <section class="card">
+        <h2>단가표</h2>
+        <details open>
+          <summary>재질별 kg 단가</summary>
+          <div id="materialRateEditor" class="rate-table-wrap"></div>
+        </details>
+        <details open>
+          <summary>공정별 단가</summary>
+          <div id="processRateEditor" class="rate-list"></div>
+        </details>
       </section>
     </aside>
   </main>
+
+  <details class="debug-box">
+    <summary>파싱 진단</summary>
+    <pre id="debugPre">대기 중</pre>
+  </details>
 
   <script src="vendor/three/three.min.js"></script>
   <script src="vendor/three/OrbitControls.js"></script>
