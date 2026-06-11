@@ -84,14 +84,14 @@ function baseTokens(s){
   return wordTokens(s).filter(t=>t.length>=2 && !/^(REV|ASM|ASSY|PART|BODY|TOTAL|DESIGN|MODEL|LEFT|RIGHT|TOP|BOTTOM)$/.test(t));
 }
 function learnedMap(){
-  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v41')||'{}')||{};}catch{return {};}
+  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v42')||'{}')||{};}catch{return {};}
 }
 function saveLearnedProcess(part){
   if(!part || !part.name || part.process==='unknown') return;
   const key=norm(part.name); if(!key) return;
   const map=learnedMap();
   map[key]={process:part.process, material:part.material, margin:part.margin, savedAt:Date.now()};
-  try{localStorage.setItem('factory_step_process_learn_v41', JSON.stringify(map));}catch{}
+  try{localStorage.setItem('factory_step_process_learn_v42', JSON.stringify(map));}catch{}
 }
 function findLearnedProcess(name){
   const key=norm(name); if(!key) return null;
@@ -520,13 +520,13 @@ function recommendProcess(part){
   const name=String(part.name||'').toUpperCase();
   const m=part.metrics||{};
   const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0,unknown:0};
-  const reasons=[];
   const ret=(process, confidence, score, reasonList, extraScores={})=>{
     const outScores={...scores,...extraScores};
     outScores[process]=Math.max(outScores[process]||0, score);
     return {process, confidence, score, scores:outScores, reasons:reasonList.filter(Boolean).slice(0,5)};
   };
 
+  // 사용자가 이전에 직접 수정한 값은 최우선. 다만 V42부터 새 키를 사용해 예전 오분류 학습은 끌고 오지 않는다.
   const learned=findLearnedProcess(name);
   if(learned?.process){
     return ret(learned.process,'높음',999,[learned.reason]);
@@ -536,82 +536,86 @@ function recommendProcess(part){
   const isStdPurchase = /BOLT|SCREW|HEX\s*NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|LEAD|CABLE|WIRE|HANDLE|KNOB|LEVER|CYLINDER|DAMPER|O[-_]?RING|SPRING|HINGE|CASTER|COUPLER|COUPLING|CLAMP\s*LEVER/i.test(name);
   const isProfileName = /PROFILE|AL[_-]?FRAME|ALFRAME|EXTRUSION|2020|3030|4040|4080|4545|5050|6060|8080|프로파일/i.test(name);
   const isLatheName = /SHAFT|PIN|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPINDLE|SLEEVE|축|핀|부싱|롤러/i.test(name);
-  const isSheetName = /HOOD|COVER|PANEL|SHEET|SKEL|SKIN|BODY|SIDE|TOP|BOTTOM|DOOR|CASE|DUCT|BRACKET|판금|커버|후드|브라켓|판넬|패널/i.test(name);
-  const isCncName = /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|BY2|PLATE|가공|블록|지그|마운트|홀더|서포트/i.test(name);
+  const isStrongSheetName = /HOOD|WATER[_-]?BOTTLE|TOP[_-]?COVER|COVER|PANEL|SHEET|SKEL|SKIN|DUCT|SIDE|TOP|BOTTOM|DOOR|판금|커버|후드|판넬|패널/i.test(name);
+  const isWeakSheetName = /BODY|BRACKET|PLATE|CASE/i.test(name);
+  const isCncName = /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|BY2|가공|블록|지그|마운트|홀더|서포트/i.test(name);
   const isInjectionName = /INJECTION|MOLD|MOULD|사출|금형/i.test(name);
   const isPrintName = /PRINT|FDM|SLA|SLS|MJF|3D|프린팅|출력/i.test(name);
   const plasticName = /\bABS\b|\bPOM\b|\bPC\b|\bPP\b|\bPE\b|PA66|NYLON|PLASTIC|RESIN|PLA|PETG|TPU|PEEK|수지/i.test(name);
   const metalName = /AL|A\d{4}|SUS|STS|SS400|S45C|SCM|SKD|STEEL|SPCC|SPHC|SECC|SGCC|C3604|C1100|철|스틸/i.test(name);
-  const hasThinToken = /(^|[^0-9])(0\.5T|0\.8T|1T|1\.0T|1\.2T|1\.5T|2T|2\.0T|2\.3T|3T|3\.0T|4T|5T|6T)([^0-9]|$)/i.test(name);
-  const hasThickToken = /(^|[^0-9])(8T|9T|10T|12T|15T|16T|20T|25T|30T|40T)([^0-9]|$)/i.test(name);
+  const hasSheetT = /(^|[^0-9])(0\.3T|0\.5T|0\.8T|1T|1\.0T|1\.2T|1\.5T|2T|2\.0T|2\.3T|3T|3\.0T|4T|5T|6T)([^0-9]|$)/i.test(name);
+  const hasThickT = /(^|[^0-9])(8T|9T|10T|12T|15T|16T|20T|25T|30T|40T)([^0-9]|$)/i.test(name);
 
-  // 1) 구매품은 무조건 먼저 뺀다. 파이프/튜브/니플도 구매품 우선.
+  // 1) 표준품/구매품 우선. 파이프·튜브·니플은 가공품으로 넘기지 않는다.
   if(isPipeOrTube){
-    return ret('purchase','높음',960,['파이프/튜브/니플 계열은 구매품 우선'],{purchase:960});
+    return ret('purchase','높음',970,['파이프/튜브/니플 계열 구매품'],{purchase:970});
   }
   if(isStdPurchase){
-    return ret('purchase','높음',940,['볼트/너트/스크류/리벳/베어링/센서/핸들류 구매품'],{purchase:940});
+    return ret('purchase','높음',950,['볼트/너트/스크류/리벳/베어링/센서/핸들류 구매품'],{purchase:950});
   }
 
-  // 2) 프로파일/압출. 단 PIPE/TUBE/NIPPLE은 이미 구매품으로 제외됨.
+  // 2) 프로파일/압출. 단 PIPE/TUBE/NIPPLE은 이미 구매품으로 빠짐.
   if(isProfileName){
-    return ret('profile','높음',890,['프로파일/압출 규격명'],{profile:890});
+    return ret('profile','높음',900,['프로파일/압출 규격명'],{profile:900});
   }
 
-  // 3) 선반. 이름이 확실하면 우선, 형상 보조.
-  if(isLatheName && (m.cylinderLike || m.slenderness>3 || !m.dims)){
-    return ret('lathe','높음',830,['축/핀/부싱/롤러 계열'],{lathe:830});
+  // 3) 선반. 이름이 명확하거나 형상이 원통형이면 선반.
+  if(isLatheName){
+    return ret('lathe', (m.cylinderLike || !m.dims)?'높음':'보통', (m.cylinderLike || !m.dims)?850:700, ['축/핀/부싱/롤러 계열'],{lathe:(m.cylinderLike || !m.dims)?850:700});
   }
-  if(!isSheetName && !isCncName && m.cylinderLike && m.slenderness>2.2){
-    return ret('lathe','보통',690,['길쭉한 원통형 형상'],{lathe:690});
-  }
-
-  // 4) 판금/절곡. 같은 두께의 얇고 넓은 판재면 꺾였든 안 꺾였든 판금이다.
-  // 이름만으로는 확정하지 않고, 얇은 두께 토큰/mesh 형상과 같이 본다.
-  if(m.uniformSheet){
-    return ret('sheet','높음',860,['같은 두께의 얇은 판재형'],{sheet:860});
-  }
-  if(m.sheetLike && (isSheetName || hasThinToken)){
-    return ret('sheet','높음',810,['얇고 넓은 판재형 + 판금 이름/두께 표기'],{sheet:810});
-  }
-  if(hasThinToken && isSheetName){
-    return ret('sheet','높음',790,['판금 이름 + 얇은 두께 표기'],{sheet:790});
-  }
-  if(isSheetName && !hasThickToken && !m.cylinderLike && (!m.dims || m.sheetLike || m.minDim<=12)){
-    return ret('sheet','보통',640,['판금/커버/바디 계열 이름'],{sheet:640});
+  if(!isStrongSheetName && !isWeakSheetName && !isCncName && m.cylinderLike && m.slenderness>2.1){
+    return ret('lathe','보통',700,['길쭉한 원통형 형상'],{lathe:700});
   }
 
-  // 5) 사출/3D프린팅은 이름 힌트가 있을 때만 자동 추천. 없으면 CNC/분류필요로 남김.
+  // 4) 판금/절곡. 핵심: 같은 두께의 얇은 판재면, 꺾였든 안 꺾였든 판금/절곡.
+  // 절곡 횟수는 자동 확정하지 않고 사람이 입력한다.
+  const sheetEvidence = [];
+  if(m.uniformSheet) sheetEvidence.push('얇고 넓은 판재 비율');
+  if(m.sheetByThickness) sheetEvidence.push(`추정두께 ${fmt1(m.estimatedThickness)}mm`);
+  if(m.lowSolidSheet) sheetEvidence.push('bbox 대비 얇은 판재 체적');
+  if(hasSheetT) sheetEvidence.push('얇은 T 표기');
+  if(isStrongSheetName) sheetEvidence.push('판금 계열 파트명');
+  if(sheetEvidence.length>=2){
+    return ret('sheet','높음',890,sheetEvidence,{sheet:890});
+  }
+  if(m.sheetByThickness || m.uniformSheet || (isStrongSheetName && !plasticName && !hasThickT)){
+    return ret('sheet','높음',840,sheetEvidence.length?sheetEvidence:['판금 계열 형상/이름'],{sheet:840});
+  }
+  if(isWeakSheetName && (m.sheetLike || hasSheetT || m.lowSolidSheet) && !plasticName){
+    return ret('sheet','보통',720,sheetEvidence.length?sheetEvidence:['브라켓/플레이트 + 판재형 특징'],{sheet:720});
+  }
+
+  // 5) 사출/3D프린팅은 명확한 힌트가 있을 때만 자동 추천.
   if(isPrintName){
-    return ret('print3d','높음',780,['3D프린팅 공정명/출력 힌트'],{print3d:780});
+    return ret('print3d','높음',800,['3D프린팅 공정명/출력 힌트'],{print3d:800});
   }
   if(isInjectionName || (plasticName && /CASE|HOUSING|COVER|BODY|CAP|BRACKET/i.test(name) && !m.sheetLike)){
-    return ret('injection', isInjectionName?'높음':'보통', isInjectionName?790:650, [isInjectionName?'사출/금형 힌트':'수지명 + 케이스/하우징 계열'], {injection:isInjectionName?790:650});
+    return ret('injection', isInjectionName?'높음':'보통', isInjectionName?800:660, [isInjectionName?'사출/금형 힌트':'수지명 + 케이스/하우징 계열'], {injection:isInjectionName?800:660});
   }
 
-  // 6) CNC/MCT. 구매품·프로파일·선반·판금으로 빠지지 않은 두꺼운 덩어리형 절삭품.
-  if(isCncName && (hasThickToken || !m.sheetLike)){
-    return ret('cnc', hasThickToken?'높음':'보통', hasThickToken?800:680, [hasThickToken?'두꺼운 소재 표기 + 절삭품 이름':'절삭 가공품 이름'], {cnc:hasThickToken?800:680});
+  // 6) CNC/MCT. 구매품·프로파일·선반·판금이 아닌 덩어리형 절삭품.
+  if(isCncName && (hasThickT || !m.sheetLike)){
+    return ret('cnc', hasThickT?'높음':'보통', hasThickT?820:700, [hasThickT?'두꺼운 소재 표기 + 절삭품 이름':'절삭 가공품 이름'], {cnc:hasThickT?820:700});
   }
-  if(!m.sheetLike && !m.cylinderLike && (m.solidness>.30 || (m.minDim>10 && m.midDim/m.minDim<4))){
-    return ret('cnc','보통',620,['판금/선반/구매품이 아닌 덩어리형 형상'],{cnc:620});
+  if(!m.sheetLike && !m.cylinderLike && (m.solidness>.28 || (m.minDim>10 && m.midDim/m.minDim<4))){
+    return ret('cnc','보통',640,['판금/선반/구매품이 아닌 덩어리형 형상'],{cnc:640});
   }
   if(plasticName && !metalName){
     return ret('injection','낮음',520,['수지명은 있으나 사출/3D 여부 확인 필요'],{injection:520,print3d:480});
   }
 
-  return ret('unknown','낮음',0,['자동 확정 어려움: 공법 선택 필요'],{unknown:0});
+  return ret('unknown','낮음',0,['공법 선택 필요'],{unknown:0});
 }
 
 function computeMetrics(raw,geom){
   const pos=raw.attributes?.position?.array||[], idx=raw.index?.array||[];
-  const m={dims:[0,0,0],minDim:0,midDim:0,maxDim:0,bboxVolume:0,volume:0,area:0,solidness:0,slenderness:0,cylinderLike:false,sheetLike:false,uniformSheet:false};
+  const m={dims:[0,0,0],minDim:0,midDim:0,maxDim:0,bboxVolume:0,volume:0,area:0,solidness:0,slenderness:0,cylinderLike:false,sheetLike:false,uniformSheet:false,estimatedThickness:0,sheetByThickness:false,lowSolidSheet:false};
   try{
     let min=[Infinity,Infinity,Infinity], max=[-Infinity,-Infinity,-Infinity];
     for(let i=0;i<pos.length;i+=3){for(let k=0;k<3;k++){const v=pos[i+k]; if(v<min[k])min[k]=v; if(v>max[k])max[k]=v;}}
     const d=[max[0]-min[0],max[1]-min[1],max[2]-min[2]].map(v=>Math.max(0,v)); const s=[...d].sort((a,b)=>a-b);
     Object.assign(m,{dims:d,minDim:s[0]||0,midDim:s[1]||0,maxDim:s[2]||0,bboxVolume:d[0]*d[1]*d[2]});
-    let area=0,vol=0; const tris=Math.floor(idx.length/3); const step=Math.max(1,Math.floor(tris/20000));
+    let area=0,vol=0; const tris=Math.floor(idx.length/3); const step=Math.max(1,Math.floor(tris/25000));
     for(let t=0;t<tris;t+=step){
       const ia=idx[t*3]*3, ib=idx[t*3+1]*3, ic=idx[t*3+2]*3; const A=[pos[ia],pos[ia+1],pos[ia+2]], B=[pos[ib],pos[ib+1],pos[ib+2]], C=[pos[ic],pos[ic+1],pos[ic+2]];
       if(!A.every(Number.isFinite)||!B.every(Number.isFinite)||!C.every(Number.isFinite)) continue;
@@ -620,11 +624,15 @@ function computeMetrics(raw,geom){
       area+=len/2*step; vol+=(A[0]*(B[1]*C[2]-B[2]*C[1])-A[1]*(B[0]*C[2]-B[2]*C[0])+A[2]*(B[0]*C[1]-B[1]*C[0]))/6*step;
     }
     m.area=area; m.volume=Math.abs(vol); m.solidness=m.bboxVolume?Math.min(1,m.volume/m.bboxVolume):0; m.slenderness=m.midDim?m.maxDim/m.midDim:0;
+    m.estimatedThickness=(m.volume>0 && m.area>0)?(2*m.volume/m.area):(m.minDim||0);
     m.cylinderLike=m.minDim>0 && m.midDim>0 && (m.midDim/m.minDim<1.45) && (m.maxDim/m.midDim>2.0);
-    m.uniformSheet=m.minDim>0 && m.minDim<=10 && m.maxDim/m.minDim>=5.0 && m.midDim/m.minDim>=1.8 && !m.cylinderLike;
-    m.sheetLike=m.uniformSheet || (m.minDim>0 && m.minDim<=12 && m.maxDim/m.minDim>8 && m.midDim/m.minDim>2.4 && !m.cylinderLike);
+    m.uniformSheet=m.minDim>0 && m.minDim<=12 && m.maxDim/m.minDim>=4.5 && m.midDim/m.minDim>=1.7 && !m.cylinderLike;
+    m.sheetByThickness=m.estimatedThickness>0 && m.estimatedThickness<=8 && m.maxDim/m.estimatedThickness>=7 && m.midDim/m.estimatedThickness>=2.2 && !m.cylinderLike;
+    m.lowSolidSheet=m.solidness>0 && m.solidness<0.18 && m.maxDim>25 && m.midDim>12 && !m.cylinderLike;
+    m.sheetLike=m.uniformSheet || m.sheetByThickness || m.lowSolidSheet || (m.minDim>0 && m.minDim<=12 && m.maxDim/m.minDim>7 && m.midDim/m.minDim>2.1 && !m.cylinderLike);
   }catch(e){console.warn('metrics fail',e);} return m;
 }
+function fmt1(v){return Number.isFinite(Number(v))?Number(v).toFixed(1):'0.0';}
 
 function selectedPart(){return state.parts.find(p=>p.id===state.selectedId)||null;}
 function materialRate(material,process){
@@ -688,7 +696,7 @@ function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manual
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
-  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,3).join(' / ')||'-')}</div><div class="details-grid">
+  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,3).join(' / ')||'-')}</div><div class="calcnote">두께추정: ${fmt1(p.metrics?.estimatedThickness||0)}mm · 판재판정: ${(p.metrics?.sheetLike||p.metrics?.sheetByThickness)?'가능':'낮음'}</div><div class="details-grid">
     <div><label>예상중량 kg/개</label><input id="selWeight" value="${kgEach(p).toFixed(4)}"></div>
     <div><label>크기 mm</label><input value="${esc(dims||'-')}" disabled></div>
     <div><label>체적 cm³</label><input value="${volumeCm3(p).toFixed(2)}" disabled></div>
