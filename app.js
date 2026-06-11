@@ -5,6 +5,7 @@ const MATERIALS = {
 };
 const PROCESSES = ['분류 필요','구매품','프로파일/압출','선반','판금/절곡','CNC/MCT','3D프린팅','사출','용접','제외'];
 const MARGINS = {'CNC/MCT':22,'선반':20,'판금/절곡':18,'3D프린팅':28,'사출':18,'프로파일/압출':15,'용접':22,'구매품':10,'분류 필요':20,'제외':0};
+const APP_VERSION = 'v3.1-product-definition-name-map';
 const RATES = {cncBase:42000, latheBase:28000, sheetBase:22000, printBase:18000, profileBase:12000, weldBase:35000, tap:2200, bend:3500, cut:1200, purchaseDefault:5000};
 let rows = [], originalRows = [], selectedId = null;
 
@@ -19,13 +20,14 @@ const stripQuote = s => {
 };
 const isGeneric = s => {
   const x = clean(s).toLowerCase();
-  return !x || ['design','default','part','product','component','assembly','assy','body','unnamed','none','null'].includes(x) || /^[-_\d\s]+$/.test(x);
+  return !x || ['design','default','part','product','component','assembly','assy','body','unnamed','none','null','next assembly relationship'].includes(x) || /^[-_\d\s]+$/.test(x);
 };
 const chooseName = (...names) => {
   for(const n of names){ const v=clean(stripQuote(n)); if(v && !isGeneric(v)) return v; }
   for(const n of names){ const v=clean(stripQuote(n)); if(v) return v; }
   return '';
 };
+
 
 function parseStepEntities(text){
   const entities = new Map();
@@ -42,7 +44,7 @@ function parseStepEntities(text){
     let type='';
     while(j<n && /[A-Za-z0-9_]/.test(text[j])) type += text[j++].toUpperCase();
     while(j<n && /\s/.test(text[j])) j++;
-    if(text[j] !== '('){ i=j; continue; }
+    if(text[j] !== '('){ i=j+1; continue; }
     let start = j+1, depth=1, inStr=false;
     j++;
     for(; j<n; j++){
@@ -59,7 +61,7 @@ function parseStepEntities(text){
         if(depth===0){
           const args = text.slice(start,j);
           while(j<n && text[j] !== ';') j++;
-          entities.set('#'+num,{id:'#'+num,type,args,params:splitTop(args)});
+          entities.set('#'+num,{id:'#'+num,type,args,params:splitTop(args),num:Number(num)});
           break;
         }
       }
@@ -82,31 +84,75 @@ function splitTop(s){
   return out;
 }
 function refs(s){ return [...String(s||'').matchAll(/#\d+/g)].map(m=>m[0]); }
+function refNum(r){ return Number(String(r||'').replace('#',''))||0; }
+function normalizeKey(s){ return clean(s).toUpperCase().replace(/\s+/g,'_'); }
+function betterName(a,b){
+  const aa=clean(a), bb=clean(b);
+  if(aa && !isGeneric(aa)) return aa;
+  if(bb && !isGeneric(bb)) return bb;
+  return aa || bb || '';
+}
+function nearestProductBefore(id, products, maxGap=8){
+  const n=refNum(id); let best=null, bestGap=Infinity;
+  for(const p of products.values()){
+    const gap=n-refNum(p.id);
+    if(gap>=0 && gap<bestGap && gap<=maxGap){ best=p; bestGap=gap; }
+  }
+  return best;
+}
+function findBestProductRef(entity, products){
+  const rs=refs(entity.args).filter(r=>products.has(r));
+  if(!rs.length) return '';
+  // STEP formation normally has PRODUCT as the last real reference. Prefer the last product ref.
+  return rs[rs.length-1];
+}
 
 function analyzeStep(text){
   const entities = parseStepEntities(text);
-  const products = new Map(), formations = new Map(), pdefs = new Map(), reps = new Map(), pdsTargets = new Map(), pdRepNames = new Map(), nauoRepNames = new Map(), brepNames=[];
+  const products = new Map(), formations = new Map(), pdefs = new Map();
+  const reps = new Map(), pdsTargets = new Map(), pdRepNames = new Map(), brepNames=[];
 
   for(const e of entities.values()){
     if(e.type === 'PRODUCT'){
-      products.set(e.id,{id:e.id,name:chooseName(e.params[1],e.params[0],e.params[2]) || `PRODUCT_${e.id.slice(1)}`});
+      // PRODUCT('part name','id','desc',context). In many CAD exports param0 is the real part name.
+      const nm = chooseName(e.params[0], e.params[1], e.params[2]) || `PRODUCT_${e.id.slice(1)}`;
+      products.set(e.id,{id:e.id,name:nm});
     }
   }
+
   for(const e of entities.values()){
     if(e.type.startsWith('PRODUCT_DEFINITION_FORMATION')){
-      const r=refs(e.args).find(x=>products.has(x));
-      formations.set(e.id,{id:e.id, productId:r, name:r?products.get(r).name:''});
+      let productId=findBestProductRef(e, products);
+      if(!productId){
+        const near=nearestProductBefore(e.id, products, 4);
+        productId=near?.id || '';
+      }
+      const p=products.get(productId);
+      formations.set(e.id,{id:e.id, productId, name:p?.name || '', source: productId ? 'formation product ref' : 'unmapped'});
     }
   }
+
   for(const e of entities.values()){
     if(e.type === 'PRODUCT_DEFINITION'){
-      const r=refs(e.args).find(x=>formations.has(x));
-      const f = r ? formations.get(r) : null;
-      pdefs.set(e.id,{id:e.id, formationId:r, productId:f?.productId, name:f?.name || chooseName(e.params[0],e.params[1]) || `PD_${e.id.slice(1)}`});
+      const formRef = refs(e.args).find(r=>formations.has(r));
+      let f = formRef ? formations.get(formRef) : null;
+      // Critical fallback for SolidWorks/STEP exports where PRODUCT_DEFINITION_FORMATION mapping is hard to resolve.
+      // In the user's sample file, PRODUCT #18 -> FORMATION #19 -> PRODUCT_DEFINITION #20.
+      // The fallback maps PRODUCT_DEFINITION #20 back to nearest previous PRODUCT #18.
+      let prod = f?.productId ? products.get(f.productId) : null;
+      let source = prod ? 'formation' : 'none';
+      if(!prod || isGeneric(prod.name)){
+        const near=nearestProductBefore(e.id, products, 5);
+        if(near && !isGeneric(near.name)){ prod=near; source='nearest PRODUCT before PD'; }
+      }
+      const pdParamName = chooseName(e.params[0], e.params[1]);
+      const name = chooseName(prod?.name, pdParamName) || `PD_${e.id.slice(1)}`;
+      pdefs.set(e.id,{id:e.id, formationId:formRef, productId:prod?.id || '', name, productName:prod?.name || '', source});
     }
   }
+
   for(const e of entities.values()){
-    if(e.type.includes('SHAPE_REPRESENTATION') || e.type === 'SHAPE_REPRESENTATION'){
+    if(e.type.includes('SHAPE_REPRESENTATION')){
       reps.set(e.id,{id:e.id,name:chooseName(e.params[0])});
     }
     if(/BREP|SOLID|SHELL|SURFACE_MODEL/.test(e.type)){
@@ -115,7 +161,7 @@ function analyzeStep(text){
   }
   for(const e of entities.values()){
     if(e.type === 'PRODUCT_DEFINITION_SHAPE'){
-      const r=refs(e.args).at(-1);
+      const r=refs(e.args).find(x=>pdefs.has(x)) || refs(e.args).at(-1);
       pdsTargets.set(e.id,r);
     }
   }
@@ -125,9 +171,8 @@ function analyzeStep(text){
       if(pds && rep){
         const target=pdsTargets.get(pds); const nm=reps.get(rep).name;
         if(nm && !isGeneric(nm)){
-          const map = pdefs.has(target) ? pdRepNames : nauoRepNames;
-          if(!map.has(target)) map.set(target,[]);
-          map.get(target).push(nm);
+          if(!pdRepNames.has(target)) pdRepNames.set(target,[]);
+          pdRepNames.get(target).push(nm);
         }
       }
     }
@@ -138,61 +183,73 @@ function analyzeStep(text){
     if(e.type === 'NEXT_ASSEMBLY_USAGE_OCCURRENCE'){
       const r=refs(e.args).filter(x=>pdefs.has(x));
       if(r.length>=2){
-        const occ=chooseName(e.params[1],e.params[0],e.params[2]);
-        links.push({id:e.id,parent:r[0],child:r[1],occName:occ});
+        // Args are typically (..., parent PRODUCT_DEFINITION, child PRODUCT_DEFINITION, ...)
+        const occRaw=chooseName(e.params[2], e.params[1], e.params[0]);
+        links.push({id:e.id,parent:r[0],child:r[1],occName:occRaw});
       }
     }
   }
 
   const parentSet = new Set(links.map(l=>l.parent));
-  const childSet = new Set(links.map(l=>l.child));
   let leafLinks = links.filter(l=>!parentSet.has(l.child));
-  let excludedAssembly = links.length - leafLinks.length;
-  let source = 'NAUO leaf occurrence';
+  let excludedAssembly = new Set(links.filter(l=>parentSet.has(l.child)).map(l=>l.child)).size;
+  let source = 'NAUO child PRODUCT_DEFINITION leaf';
 
   let rawRows = leafLinks.map((l,idx)=>{
     const pd=pdefs.get(l.child);
-    const rep=(pdRepNames.get(l.child)||[])[0] || (nauoRepNames.get(l.id)||[])[0] || '';
-    let name=chooseName(l.occName, pd?.name, rep);
+    const rep=(pdRepNames.get(l.child)||[]).find(x=>!isGeneric(x)) || '';
+    // IMPORTANT: occurrenceName is often the generic phrase "Next assembly relationship".
+    // Never let that override PRODUCT/PD names.
+    let name=chooseName(pd?.name, rep, l.occName);
     if(isGeneric(name)) name = `PART_${idx+1}_${l.child.replace('#','')}`;
-    return {name, child:l.child, parent:l.parent, link:l.id, occName:l.occName, pdName:pd?.name||'', repName:rep, path:`${l.parent} > ${l.child} (${l.id})`};
+    return {name, child:l.child, parent:l.parent, link:l.id, occName:l.occName, pdName:pd?.name||'', productId:pd?.productId||'', productName:pd?.productName||'', pdSource:pd?.source||'', repName:rep, path:`${l.parent} > ${l.child} (${l.id})`};
   });
 
-  // 강한 fallback: leaf가 1개 이하인데 PRODUCT/PD가 여러 개인 경우, PRODUCT_DEFINITION 전체에서 말단 후보를 다시 뽑음.
-  // SolidWorks/일부 CAD는 PRODUCT 이름이 design으로 뭉개지고 occurrence 이름이 비어 있는 경우가 있어서 이 fallback이 필요함.
-  if(rawRows.length <= 1 && pdefs.size > 2){
-    const candidate=[];
-    for(const [pdId,pd] of pdefs.entries()){
-      const isParent=parentSet.has(pdId);
-      const isChild=childSet.has(pdId);
-      if(isParent) continue;
-      const rep=(pdRepNames.get(pdId)||[])[0] || '';
-      let name=chooseName(pd.name, rep);
-      if(isGeneric(name)) name = rep && !isGeneric(rep) ? rep : `PART_${candidate.length+1}_${pdId.replace('#','')}`;
-      if(!/^(design|assembly|assy)$/i.test(name)) candidate.push({name, child:pdId, parent:'', link:'fallback', occName:'', pdName:pd.name, repName:rep, path:`fallback ${pdId}`});
-    }
-    if(candidate.length > rawRows.length){ rawRows = candidate; source='fallback: product definitions without children'; excludedAssembly = Math.max(0, pdefs.size - candidate.length); }
+  // Fallback 1: If links exist but mapped names are still generic, rebuild by nearest PRODUCT before child PD.
+  const genericCount = rawRows.filter(r=>isGeneric(r.name) || /^PART_/.test(r.name)).length;
+  if(rawRows.length && genericCount/rawRows.length > 0.5){
+    rawRows = leafLinks.map((l,idx)=>{
+      const near=nearestProductBefore(l.child, products, 5);
+      const pd=pdefs.get(l.child);
+      const rep=(pdRepNames.get(l.child)||[]).find(x=>!isGeneric(x)) || '';
+      const name=chooseName(near?.name, pd?.name, rep) || `PART_${idx+1}_${l.child.replace('#','')}`;
+      return {name, child:l.child, parent:l.parent, link:l.id, occName:l.occName, pdName:pd?.name||'', productId:near?.id || pd?.productId || '', productName:near?.name || pd?.productName || '', pdSource:'leaf child nearest PRODUCT fallback', repName:rep, path:`${l.parent} > ${l.child} (${l.id})`};
+    });
+    source += ' + nearest PRODUCT name fallback';
   }
 
-  // 마지막 fallback: BREP 이름이 여러 개면 BREP별 후보로 표시
-  if(rawRows.length <= 1 && brepNames.length > 1){
-    rawRows = brepNames.map((nm,i)=>({name:nm,child:`BREP_${i+1}`,parent:'',link:'brep',occName:nm,pdName:'',repName:nm,path:`brep ${i+1}`}));
+  // Fallback 2: no usable NAUO -> show non-assembly product definitions.
+  if(rawRows.length === 0 && pdefs.size){
+    const candidate=[];
+    for(const [pdId,pd] of pdefs.entries()){
+      if(parentSet.has(pdId)) continue;
+      const name=chooseName(pd.name, (pdRepNames.get(pdId)||[])[0]) || `PART_${candidate.length+1}_${pdId.replace('#','')}`;
+      candidate.push({name, child:pdId, parent:'', link:'fallback', occName:'', pdName:pd.name, productId:pd.productId, productName:pd.productName, pdSource:pd.source, repName:'', path:`fallback ${pdId}`});
+    }
+    rawRows=candidate; source='fallback: PRODUCT_DEFINITION without children';
+  }
+
+  // Fallback 3: named breps/solids.
+  if(rawRows.length===0 && brepNames.length){
+    rawRows = brepNames.map((nm,i)=>({name:nm,child:`BREP_${i+1}`,parent:'',link:'brep',occName:nm,pdName:'',productId:'',productName:nm,pdSource:'brep',repName:nm,path:`brep ${i+1}`}));
     source='fallback: named BREP/SOLID entities'; excludedAssembly=0;
   }
 
-  // group by meaningful part key; generic fallback rows are kept separate unless same child/name
+  // Group repeated occurrences by actual PRODUCT/PD name. Do not group generic relationship names.
   const groups = new Map();
   for(const r of rawRows){
-    const k = `${r.child}|${r.name}`;
-    if(!groups.has(k)) groups.set(k,{...r, qty:0, occurrences:[]});
-    const g=groups.get(k); g.qty++; g.occurrences.push(r.link);
+    const keyName = isGeneric(r.name) ? `${r.child}` : normalizeKey(r.name);
+    const k = keyName;
+    if(!groups.has(k)) groups.set(k,{...r, qty:0, occurrences:[], children:new Set()});
+    const g=groups.get(k); g.qty++; g.occurrences.push(r.link); g.children.add(r.child);
   }
-  const partRows = [...groups.values()].map((r,i)=>makeQuoteRow(r,i));
+  const grouped = [...groups.values()].map(g=>({...g, children:[...g.children]})).sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+  const partRows = grouped.map((r,i)=>makeQuoteRow(r,i));
 
   return {
-    entities:entities.size, productCount:products.size, pdCount:pdefs.size, linkCount:links.length,
+    entities:entities.size, productCount:products.size, pdCount:pdefs.size, formationCount:formations.size, linkCount:links.length,
     leafLinkCount:leafLinks.length, excludedAssembly, source, rows:partRows,
-    sampleLinks:links.slice(0,12), sampleProducts:[...products.values()].slice(0,20), samplePdefs:[...pdefs.values()].slice(0,20), sampleRows:rawRows.slice(0,20)
+    sampleLinks:links.slice(0,20), sampleProducts:[...products.values()].slice(0,35), samplePdefs:[...pdefs.values()].slice(0,35), sampleRows:rawRows.slice(0,40)
   };
 }
 
@@ -214,7 +271,7 @@ function classifyByName(name){
   const qtyMatch = n.match(/(?:X|QTY|EA)[-_ ]?(\d{1,3})\b/);
   const tMatch = n.match(/(?:^|[_ -])(?:T|THK)(\d+(?:\.\d+)?)/) || n.match(/(\d+(?:\.\d+)?)T\b/);
   const thickness = tMatch ? Number(tMatch[1]) : 0;
-  if(has(/BOLT|NUT|WASHER|BEARING|MOTOR|SENSOR|CYLINDER|SCREW|SPRING|LINEAR|LM\s?GUIDE|PIPE|TUBE|파이프|튜브|각관|배관|SQUARE[_ -]?TUBE|ROUND[_ -]?PIPE|HOSE|FITTING|VALVE/)){
+  if(has(/BOLT|NUT|WASHER|BEARING|MOTOR|SENSOR|CYLINDER|SCREW|SPRING|LINEAR|LM\s?GUIDE|PIPE|TUBE|파이프|튜브|각관|배관|SQUARE[_ -]?TUBE|ROUND[_ -]?PIPE|HOSE|FITTING|VALVE|RIVET|REVET|NIPPLE|PIE/)){
     reason.push('표준품/구매재 키워드 우선'); return {process:'구매품', reason:reason.join(', '), confidence:'높음', buyUnit:guessBuyPrice(n)};
   }
   if(has(/PROFILE|AL[_ -]?FRAME|ALFRAME|프로파일|압출|\b20[24]0\b|\b3030\b|\b4040\b|\b4080\b|\b4545\b|\b8080\b/)){
@@ -224,12 +281,15 @@ function classifyByName(name){
     reason.push('원통/축류 키워드'); return {process:'선반', reason:reason.join(', '), confidence:'높음'};
   }
   const bendHint=has(/BEND|BENT|FOLD|FOLDED|FLANGE|절곡|접힘|L[_ -]?BRACKET|U[_ -]?BRACKET|ㄱ|ㄷ/);
-  const sheetHint=has(/SHEET|COVER|PANEL|COWL|BRACKET|BRKT|PLATE|판금|커버|패널|브라켓/);
+  const sheetHint=has(/SHEET|HOOD|COVER|PANEL|COWL|BRACKET|BRKT|PLATE|판금|커버|패널|브라켓/);
   if(bendHint && (thickness>0 && thickness<=6 || sheetHint)){
     reason.push('같은 두께 판재 + 절곡/플랜지 힌트'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'보통~높음', thickness:thickness||2, bends:guessBends(n)};
   }
   if(sheetHint && thickness>0 && thickness<=6){
     reason.push('얇은 판재 힌트, 절곡은 미확정'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'보통', thickness, bends:0};
+  }
+  if(sheetHint){
+    reason.push('판재/커버류 이름 힌트, 두께·절곡은 공장이 확인'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'낮음~보통', thickness:1.5, bends:0};
   }
   if(has(/HOUSING|CASE|CAP|COVER/) && has(/ABS|PP|PC|PLASTIC|RESIN|수지|플라스틱/)){
     reason.push('플라스틱 케이스/하우징 후보'); return {process:'사출', reason:reason.join(', '), confidence:'보통'};
