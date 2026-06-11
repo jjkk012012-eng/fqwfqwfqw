@@ -6,7 +6,7 @@ const PROCESSES = ['purchase','sheet','cnc','lathe','injection','print3d','profi
 const state = {rates:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}};
 const DEFAULT_RATES = {
   materials:{
-    AL6061:{density:2.70,sheet:6900,cnc:7200,injection:0,print3d:0,profile:7600},
+    AL6061:{density:2.70,sheet:6900,cnc:7200,injection:7200,print3d:8500,profile:7600},
     SUS304:{density:7.93,sheet:6100,cnc:6500,injection:0,print3d:0,profile:6500},
     SS400:{density:7.85,sheet:1650,cnc:1800,injection:0,print3d:0,profile:1800},
     SPCC:{density:7.85,sheet:1600,cnc:1750,injection:0,print3d:0,profile:1750},
@@ -14,17 +14,18 @@ const DEFAULT_RATES = {
     POM:{density:1.41,sheet:0,cnc:9200,injection:8500,print3d:12000,profile:0}
   },
   process:{
-    sheet:{basePerEa:12000,bendUnit:3000,holeUnit:350,margin:18},
-    cnc:{hourly:65000,setup:50000,hourPerKg:0.55,holeTapUnit:2000,margin:22},
-    lathe:{hourly:55000,setup:30000,hourPerKg:0.35,holeTapUnit:1500,margin:20},
-    injection:{hourly:45000,setup:0,hourPerKg:0.08,margin:20},
-    print3d:{hourly:12000,setup:5000,hourPerKg:9.0,margin:28},
-    profile:{cutUnit:1200,tapUnit:1500,margin:15},
-    welding:{hourly:45000,setup:20000,hourPerKg:0.25,margin:22},
-    purchase:{margin:10},unknown:{margin:0}
+    commonHourly:65000,
+    sheet:{bendUnit:3000,margin:18},
+    cnc:{setup:50000,margin:22},
+    lathe:{setup:30000,margin:20},
+    injection:{setup:0,margin:20},
+    print3d:{setup:5000,margin:28},
+    profile:{processPerEa:2000,margin:15},
+    welding:{margin:0},
+    purchase:{margin:10},
+    unknown:{margin:0}
   }
 };
-
 window.addEventListener('DOMContentLoaded', async () => {
   await loadRates();
   initUpload();
@@ -35,8 +36,14 @@ window.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function loadRates(){
-  try{ const r = await fetch('data/rates.json'); state.rates = r.ok ? await r.json() : structuredClone(DEFAULT_RATES); }
-  catch{ state.rates = structuredClone(DEFAULT_RATES); }
+  try{
+    const saved = localStorage.getItem('factoryStepRates');
+    if(saved) state.rates = JSON.parse(saved);
+  }catch{}
+  if(!state.rates){
+    try{ const r = await fetch('data/rates.json'); state.rates = r.ok ? await r.json() : structuredClone(DEFAULT_RATES); }
+    catch{ state.rates = structuredClone(DEFAULT_RATES); }
+  }
   mergeDefaults(state.rates, DEFAULT_RATES);
 }
 function mergeDefaults(obj, def){ for(const k in def){ if(obj[k]===undefined) obj[k]=structuredClone(def[k]); else if(def[k] && typeof def[k]==='object' && !Array.isArray(def[k])) mergeDefaults(obj[k], def[k]); } }
@@ -54,6 +61,12 @@ function bindActions(){
   $('exportCsvBtn').addEventListener('click', exportCsv);
   $('showAllBtn').addEventListener('click', showAllMeshes);
   $('fitBtn').addEventListener('click', fitCamera);
+  $('saveRatesBtn').addEventListener('click', saveRatesToBrowser);
+  $('downloadRatesBtn').addEventListener('click', downloadRates);
+  $('loadRatesBtn').addEventListener('click', ()=>$('ratesFile').click());
+  $('ratesFile').addEventListener('change', importRatesFile);
+  $('copyRatesBtn').addEventListener('click', copyRates);
+  $('pasteRatesBtn').addEventListener('click', pasteRates);
 }
 
 function setMessage(type,msg){ const el=$('message'); el.className='message '+(type||''); el.textContent=msg; }
@@ -204,46 +217,96 @@ function computeMeshMetrics(raw, geom){
 }
 
 function initPart(p,idx){
-  const classification=classify(p); const process=classification.process;
-  const material=defaultMaterial(process,p.name); const kg=estimateKg(p,material); const rates=state.rates.process;
-  const timePerEa=estimateTime(process,kg); const purchaseUnit=process==='purchase'?estimatePurchaseUnit(p.name):0;
-  return {id:`p${idx}_${norm(p.name)}`, name:p.name, qty:p.qty||1, source:p.source||'', meshName:p.meshName||'', meshNorm:p.meshNorm||'', metrics:p.metrics||null, process, material, kgPerEa:kg, timePerEa, holes:process==='sheet'||process==='cnc'?estimateHoles(p):0, bends:process==='sheet'?estimateBends(p):0, purchaseUnit, margin:state.rates.process[process]?.margin??0, classInfo:classification, quote:0, costBreakdown:{}};
+  const classification=classify(p);
+  const process=classification.process;
+  const material=defaultMaterial(process,p.name);
+  const kg=estimateKg(p,material);
+  const purchaseUnit=process==='purchase'?estimatePurchaseUnit(p.name):0;
+  return {
+    id:`p${idx}_${norm(p.name)}`, name:p.name, qty:p.qty||1, source:p.source||'',
+    meshName:p.meshName||'', meshNorm:p.meshNorm||'', metrics:p.metrics||null,
+    process, material, kgPerEa:kg, timePerEa:0, bends:0, purchaseUnit,
+    margin:state.rates.process[process]?.margin??0, classInfo:classification, quote:0, costBreakdown:{}
+  };
 }
 function classify(p){
-  const name=String(p.name||''); const up=name.toUpperCase(); const m=p.metrics||{}; const score={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,injection:0,print3d:0,welding:0}; const reasons=[];
-  if(/BOLT|SCREW|NUT|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|PIE|LEAD|FITTING|SPRING|O[-_ ]?RING|CHECK/.test(up)){score.purchase+=150; reasons.push('표준품/배관/체결품 이름');}
-  if(/PROFILE|AL[_-]?FRAME|2020|3030|4040|4080|EXTRUSION/.test(up) && !/PIPE|TUBE|PIE/.test(up)){score.profile+=130; reasons.push('프로파일 이름');}
-  if(/SHAFT|PIN|BUSH|ROLLER|COLLAR|ROD/.test(up)){score.lathe+=95; reasons.push('축/선반품 이름');}
-  if(m.cylinderLike){score.lathe+=70; score.purchase+=20; reasons.push('길쭉한 원통형');}
-  if(/HANDLE|LEVER/.test(up) && m.cylinderLike){score.purchase+=90; reasons.push('핸들/레버 표준품 가능');}
+  const name=String(p.name||''); const up=name.toUpperCase(); const m=p.metrics||{};
+  const score={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,injection:0,print3d:0,welding:0}; const reasons=[];
+  // 구매품은 공장장이 단가만 수정하도록 최우선
+  if(/BOLT|SCREW|NUT|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|PIE|LEAD|FITTING|SPRING|O[-_ ]?RING|CHECK|HANDLE|LEVER/.test(up)){score.purchase+=180; reasons.push('표준품/구매품 이름');}
+  // 압출/프로파일: 파이프/튜브는 구매품 우선
+  if(/PROFILE|AL[_-]?FRAME|2020|3030|4040|4080|EXTRUSION/.test(up) && !/PIPE|TUBE|PIE/.test(up)){score.profile+=140; reasons.push('프로파일/압출 이름');}
+  // 선반
+  if(/SHAFT|PIN|BUSH|ROLLER|COLLAR|ROD/.test(up)){score.lathe+=100; reasons.push('축/선반품 이름');}
+  if(m.cylinderLike){score.lathe+=60; reasons.push('원통형 형상');}
+  // 판금/절곡: 이름 + 얇은 판재형이면 강하게, 이름만 있으면 후보
   if(/HOOD|COVER|PANEL|SHEET|SKEL|BODY|SIDE|TOP|BRACKET/.test(up)){score.sheet+=45; reasons.push('판금류 이름');}
-  if(m.sheetLike){score.sheet+=70; reasons.push('얇은 판재형 형상');}
-  if(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|PLATE/.test(up)){score.cnc+=45; reasons.push('절삭품 이름');}
-  if(/12T|15T|20T|25T|30T/.test(up)){score.cnc+=45; score.sheet-=15; reasons.push('두꺼운 소재 표기');}
-  if(m.solidness>.35 && !m.sheetLike && !m.cylinderLike){score.cnc+=45; reasons.push('덩어리형 형상');}
-  if(/CASE|HOUSING|MOLD|PLASTIC/.test(up)){score.injection+=35; score.print3d+=25; reasons.push('케이스/플라스틱 후보');}
-  if(score.purchase>=100){score.sheet-=80; score.cnc-=70; score.profile-=70; score.lathe-=30;}
-  if(score.profile>=100){score.purchase-=30; score.sheet-=80; score.cnc-=70;}
-  const entries=Object.entries(score).sort((a,b)=>b[1]-a[1]); const [best,bscore]=entries[0], [,second]=entries[1]; const process=(bscore<35 || bscore-second<18)?'unknown':best;
+  if(m.sheetLike){score.sheet+=80; reasons.push('얇은 판재형 형상');}
+  if(/BEND|BENT|FOLD|FLANGE|절곡/.test(up)){score.sheet+=55; reasons.push('절곡 힌트');}
+  // CNC/MCT
+  if(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|PLATE/.test(up)){score.cnc+=55; reasons.push('절삭 가공품 이름');}
+  if(/12T|15T|20T|25T|30T/.test(up)){score.cnc+=45; score.sheet-=10; reasons.push('두꺼운 소재 표기');}
+  if(m.solidness>.35 && !m.sheetLike && !m.cylinderLike){score.cnc+=55; reasons.push('덩어리형 형상');}
+  if(/CASE|HOUSING|MOLD|PLASTIC/.test(up)){score.injection+=45; score.print3d+=25; reasons.push('사출/3D 후보');}
+  if(score.purchase>=100){score.sheet-=100; score.cnc-=90; score.profile-=90; score.lathe-=50;}
+  if(score.profile>=100){score.purchase-=20; score.sheet-=90; score.cnc-=70;}
+  const entries=Object.entries(score).sort((a,b)=>b[1]-a[1]); const [best,bscore]=entries[0], [,second]=entries[1];
+  const process=(bscore<35 || bscore-second<15)?'unknown':best;
   return {process, score, reasons:reasons.slice(0,4), confidence:bscore>=100?'높음':bscore>=60?'보통':'낮음'};
 }
-function defaultMaterial(process,name){ const u=String(name).toUpperCase(); if(/SUS|STS|NIPPLE|VALVE/.test(u)) return 'SUS304'; if(process==='sheet') return /HOOD|COVER|BODY|SKEL/.test(u)?'SUS304':'SPCC'; if(process==='purchase') return /BOLT|NUT|SCREW/.test(u)?'SS400':'SUS304'; if(process==='injection') return 'ABS'; if(process==='print3d') return 'ABS'; return 'AL6061'; }
-function estimateKg(p,mat){ const m=p.metrics; if(m?.volume){ const d=state.rates.materials[mat]?.density||1; return round(Math.max(.001,m.volume/1000*d/1000),3); } const n=p.name.toUpperCase(); if(/BOLT|SCREW/.test(n))return .004; if(/NUT/.test(n))return .03; if(/VALVE|NIPPLE/.test(n))return .04; if(/12T/.test(n))return .044; if(/HOOD|COVER|BODY|SKEL/.test(n))return .25; return .05; }
-function estimateTime(process,kg){ const r=state.rates.process[process]||{}; if(['cnc','lathe','injection','print3d','welding'].includes(process)) return round(Math.max(.03,kg*(r.hourPerKg||0)),2); return 0; }
-function estimatePurchaseUnit(name){ const u=String(name).toUpperCase(); if(/BOLT|SCREW/.test(u))return 120; if(/NUT/.test(u))return 50; if(/VALVE/.test(u))return 1000; if(/NIPPLE/.test(u))return 2500; if(/LEAD|HANDLE|LEVER/.test(u))return 18000; return 1000; }
-function estimateHoles(p){ const m=p.metrics; if(m?.holeScore) return Math.min(99,m.holeScore); const u=p.name.toUpperCase(); if(/HOOD|COVER|BODY|SKEL/.test(u))return 0; return 0; }
-function estimateBends(p){ const m=p.metrics; if(m?.sheetLike && m.bendSignal>0) return Math.min(20,Math.max(0,m.bendSignal)); return 0; }
+function defaultMaterial(process,name){
+  const u=String(name).toUpperCase();
+  if(/SUS|STS|NIPPLE|VALVE/.test(u)) return 'SUS304';
+  if(process==='sheet') return /HOOD|COVER|BODY|SKEL/.test(u)?'SUS304':'SPCC';
+  if(process==='purchase') return /BOLT|NUT|SCREW/.test(u)?'SS400':'SUS304';
+  if(process==='injection'||process==='print3d') return 'ABS';
+  return 'AL6061';
+}
+function estimateKg(p,mat){
+  const m=p.metrics;
+  if(m?.volume){ const d=state.rates.materials[mat]?.density||1; return round(Math.max(.001,m.volume/1000*d/1000),3); }
+  const n=p.name.toUpperCase();
+  if(/BOLT|SCREW/.test(n))return .004; if(/NUT/.test(n))return .03; if(/VALVE|NIPPLE/.test(n))return .04; if(/12T/.test(n))return .044; if(/HOOD|COVER|BODY|SKEL/.test(n))return .25; return .05;
+}
+function estimatePurchaseUnit(name){
+  const u=String(name).toUpperCase();
+  if(/BOLT|SCREW/.test(u))return 120; if(/NUT/.test(u))return 50; if(/VALVE/.test(u))return 1000; if(/NIPPLE/.test(u))return 2500; if(/LEAD|HANDLE|LEVER/.test(u))return 18000; return 1000;
+}
 function round(n,d=2){ const p=10**d; return Math.round((Number(n)||0)*p)/p; }
 
 function recalcAll(){ state.parts.forEach(calcPart); updateStats(); }
-function materialKgPrice(material,process){ const mat=state.rates.materials[material]||{}; if(process==='sheet') return mat.sheet||mat.cnc||0; if(process==='cnc'||process==='lathe'||process==='welding') return mat.cnc||mat.sheet||0; if(process==='injection') return mat.injection||mat.cnc||0; if(process==='print3d') return mat.print3d||mat.injection||mat.cnc||0; if(process==='profile') return mat.profile||mat.cnc||0; return mat.cnc||mat.sheet||0; }
+function recalcAll(){ state.parts.forEach(calcPart); updateStats(); }
+function materialKgPrice(material,process){
+  const mat=state.rates.materials[material]||{};
+  if(process==='sheet') return mat.sheet||mat.cnc||0;
+  if(process==='cnc'||process==='lathe'||process==='welding') return mat.cnc||mat.sheet||0;
+  if(process==='injection') return mat.injection||mat.cnc||0;
+  if(process==='print3d') return mat.print3d||mat.injection||mat.cnc||0;
+  if(process==='profile') return mat.profile||mat.cnc||0;
+  return mat.cnc||mat.sheet||0;
+}
+function usesTime(proc){ return ['cnc','lathe','injection','print3d'].includes(proc); }
 function calcPart(p){
-  const qty=Math.max(0,num(p.qty)); const kg=Math.max(0,num(p.kgPerEa)); const matCost=kg*qty*materialKgPrice(p.material,p.process); const r=state.rates.process[p.process]||{}; let pre=0, detail={material:matCost, process:0, setup:0, margin:0};
-  if(p.process==='purchase'){ pre=qty*num(p.purchaseUnit); }
-  else if(p.process==='sheet'){ detail.process=qty*num(r.basePerEa)+qty*num(p.bends)*num(r.bendUnit)+qty*num(p.holes)*num(r.holeUnit); pre=matCost+detail.process; }
-  else if(p.process==='profile'){ detail.process=qty*num(p.bends)*num(r.cutUnit)+qty*num(p.holes)*num(r.tapUnit); pre=matCost+detail.process; }
-  else if(['cnc','lathe','injection','print3d','welding'].includes(p.process)){ detail.setup=qty>0?num(r.setup):0; detail.process=qty*num(p.timePerEa)*num(r.hourly)+qty*num(p.holes)*num(r.holeTapUnit||0); pre=matCost+detail.process+detail.setup; }
-  else { pre=0; }
+  const qty=Math.max(0,num(p.qty)); const kg=Math.max(0,num(p.kgPerEa));
+  const matCost=kg*qty*materialKgPrice(p.material,p.process);
+  const r=state.rates.process; let pre=0, detail={material:matCost, process:0, setup:0, margin:0, note:''};
+  if(p.process==='purchase'){
+    pre=qty*num(p.purchaseUnit);
+    detail.material=0; detail.process=pre;
+  } else if(p.process==='sheet'){
+    detail.process=qty*num(p.bends)*num(r.sheet.bendUnit);
+    pre=matCost+detail.process;
+  } else if(usesTime(p.process)){
+    const pr=r[p.process]||{};
+    detail.setup=qty>0?num(pr.setup):0;
+    detail.process=qty*num(p.timePerEa)*num(r.commonHourly);
+    pre=matCost+detail.process+detail.setup;
+  } else if(p.process==='profile'){
+    detail.process=qty*num(r.profile.processPerEa);
+    pre=matCost+detail.process;
+  } else if(p.process==='welding'){
+    pre=0; detail.material=0; detail.process=0; detail.note='용접은 내부 검토';
+  } else { pre=0; detail.material=0; }
   detail.margin=pre*num(p.margin)/100; p.quote=Math.round(pre+detail.margin); p.costBreakdown=detail; return p.quote;
 }
 
@@ -255,13 +318,12 @@ function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body
       <td><span class="tag">${PROCESS_LABELS[p.process]}</span><div class="reason">${esc(reasonText(p))}</div></td>
       <td>${selectProcess(p)}</td>
       <td>${selectMaterial(p)}</td>
-      <td>${input(p.id,'kgPerEa',p.kgPerEa,'number','0.001')}</td>
-      <td>${input(p.id,'timePerEa',p.timePerEa,'number','0.01', isTimeDisabled(p.process))}</td>
-      <td>${input(p.id,'holes',p.holes,'number','1', p.process==='purchase')}</td>
-      <td>${input(p.id,'bends',p.bends,'number','1', !['sheet','profile'].includes(p.process))}</td>
-      <td>${input(p.id,'purchaseUnit',p.purchaseUnit,'number','1', p.process!=='purchase')}</td>
-      <td>${input(p.id,'margin',p.margin,'number','1')}</td>
-      <td class="money">${won(p.quote)}</td>
+      <td>${input(p.id,'kgPerEa',p.kgPerEa,'number','0.001',p.process==='purchase')}</td>
+      <td>${input(p.id,'bends',p.bends,'number','1',p.process!=='sheet')}</td>
+      <td>${input(p.id,'timePerEa',p.timePerEa,'number','0.01',!usesTime(p.process))}</td>
+      <td>${input(p.id,'purchaseUnit',p.purchaseUnit,'number','1',p.process!=='purchase')}</td>
+      <td>${input(p.id,'margin',p.margin,'number','1',p.process==='welding')}</td>
+      <td class="money">${p.process==='welding'?'내부검토':won(p.quote)}</td>
     </tr>`).join('');
   body.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); }));
   body.querySelectorAll('input,select').forEach(el=>el.addEventListener('change', onPartEdit));
@@ -270,31 +332,64 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 function input(id,field,val,type='number',step='1',disabled=false){ return `<input data-id="${id}" data-field="${field}" type="${type}" step="${step}" value="${esc(val)}" ${disabled?'disabled':''}>`; }
 function selectProcess(p){ return `<select data-id="${p.id}" data-field="process">${PROCESSES.map(k=>`<option value="${k}" ${p.process===k?'selected':''}>${PROCESS_LABELS[k]}</option>`).join('')}</select>`; }
 function selectMaterial(p){ return `<select data-id="${p.id}" data-field="material">${MATERIALS.map(m=>`<option value="${m}" ${p.material===m?'selected':''}>${m}</option>`).join('')}</select>`; }
-function isTimeDisabled(proc){ return ['purchase','sheet','profile','unknown'].includes(proc); }
 function reasonText(p){ const c=p.classInfo; const score=c?.score?Object.entries(c.score).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${PROCESS_LABELS[k]} ${v}`).join(' · '):''; return `${(c?.reasons||[]).join(' / ')}${score?' · '+score:''}`; }
-function onPartEdit(e){ const p=state.parts.find(x=>x.id===e.target.dataset.id); if(!p)return; const f=e.target.dataset.field; let v=e.target.value; if(['qty','kgPerEa','timePerEa','holes','bends','purchaseUnit','margin'].includes(f)) v=num(v); p[f]=v; if(f==='process'){ p.margin=state.rates.process[p.process]?.margin??p.margin; if(p.process==='purchase' && !p.purchaseUnit) p.purchaseUnit=estimatePurchaseUnit(p.name); if(!isTimeDisabled(p.process) && !p.timePerEa) p.timePerEa=estimateTime(p.process,p.kgPerEa); }
-  calcPart(p); renderParts(); renderSelected(); updateStats(); }
+function onPartEdit(e){
+  const p=state.parts.find(x=>x.id===e.target.dataset.id); if(!p)return;
+  const f=e.target.dataset.field; let v=e.target.value;
+  if(['qty','kgPerEa','timePerEa','bends','purchaseUnit','margin'].includes(f)) v=num(v);
+  p[f]=v;
+  if(f==='process'){
+    p.margin=state.rates.process[p.process]?.margin??p.margin;
+    if(p.process==='purchase' && !p.purchaseUnit) p.purchaseUnit=estimatePurchaseUnit(p.name);
+    if(p.process!=='sheet') p.bends=0;
+    if(!usesTime(p.process)) p.timePerEa=0;
+  }
+  calcPart(p); renderParts(); renderSelected(); updateStats();
+}
 function selectPart(id){ state.selectedId=id; const p=state.parts.find(x=>x.id===id); showPart(p); renderParts(); renderSelected(); }
 function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId); const el=$('selectedPanel'); if(!p){ el.innerHTML='<h2>선택 파트</h2><p class="muted">파트를 선택하세요.</p>'; return; }
-  const b=p.costBreakdown||{}; el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName||'형상 미연결')}</p>
-  <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>kg/개</b><br>${p.kgPerEa}</div><div><b>시간/개</b><br>${p.timePerEa}</div><div><b>홀수</b><br>${p.holes}</div><div><b>절곡수</b><br>${p.bends}</div></div>
+  const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금: 절곡수 입력':usesTime(p.process)?'시간 공정: 시간/개 입력':p.process==='purchase'?'구매품: 단가 입력':p.process==='welding'?'용접: 내부 검토':'기본 계산';
+  el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName||'형상 미연결')}</p>
+  <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>kg/개</b><br>${p.kgPerEa}</div><div><b>입력 기준</b><br>${mode}</div></div>
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
   <h3>빠른 변경</h3><div class="quick-actions">
     <button data-quick="sheet">판금/절곡</button><button data-quick="cnc">CNC/MCT</button><button data-quick="purchase">구매품</button><button data-quick="print3d">3D프린팅</button>
-    <button data-quick="bendPlus">절곡 +1</button><button data-quick="bendMinus">절곡 -1</button><button data-quick="holePlus">홀 +1</button><button data-quick="holeMinus">홀 -1</button>
-  </div><h2 class="money">${won(p.quote)}</h2>`;
+    <button data-quick="profile">압출</button><button data-quick="welding">용접검토</button><button data-quick="bendPlus">절곡 +1</button><button data-quick="bendMinus">절곡 -1</button>
+  </div><h2 class="money">${p.process==='welding'?'내부검토':won(p.quote)}</h2>`;
   el.querySelectorAll('button[data-quick]').forEach(btn=>btn.addEventListener('click',()=>quickEdit(p,btn.dataset.quick)));
 }
-function quickEdit(p,cmd){ if(PROCESSES.includes(cmd)){ p.process=cmd; p.margin=state.rates.process[cmd]?.margin??p.margin; if(cmd==='purchase'&&!p.purchaseUnit)p.purchaseUnit=estimatePurchaseUnit(p.name); if(!isTimeDisabled(cmd)&&!p.timePerEa)p.timePerEa=estimateTime(cmd,p.kgPerEa); }
-  if(cmd==='bendPlus')p.bends++; if(cmd==='bendMinus')p.bends=Math.max(0,p.bends-1); if(cmd==='holePlus')p.holes++; if(cmd==='holeMinus')p.holes=Math.max(0,p.holes-1); calcPart(p); renderParts(); renderSelected(); updateStats(); }
+function quickEdit(p,cmd){
+  if(PROCESSES.includes(cmd)){ p.process=cmd; p.margin=state.rates.process[cmd]?.margin??p.margin; if(cmd==='purchase'&&!p.purchaseUnit)p.purchaseUnit=estimatePurchaseUnit(p.name); if(cmd!=='sheet')p.bends=0; if(!usesTime(cmd))p.timePerEa=0; }
+  if(cmd==='bendPlus')p.bends++; if(cmd==='bendMinus')p.bends=Math.max(0,p.bends-1);
+  calcPart(p); renderParts(); renderSelected(); updateStats();
+}
 
 function renderRateEditors(){ renderMaterialRates(); renderProcessRates(); }
-function renderMaterialRates(){ const mat=state.rates.materials; $('materialRateEditor').innerHTML=`<table class="rate-table"><thead><tr><th>재질</th><th>판재</th><th>CNC/선반</th><th>사출</th><th>3D</th><th>압출</th></tr></thead><tbody>${MATERIALS.map(m=>`<tr><td><b>${m}</b></td>${['sheet','cnc','injection','print3d','profile'].map(k=>`<td><input data-rate="mat" data-mat="${m}" data-key="${k}" type="number" value="${mat[m]?.[k]||0}"></td>`).join('')}</tr>`).join('')}</tbody></table>`;
-  $('materialRateEditor').querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ state.rates.materials[i.dataset.mat][i.dataset.key]=num(i.value); recalcAll(); renderParts(); renderSelected(); })); }
-function renderProcessRates(){ const p=state.rates.process; const lines=[['sheet.basePerEa','판금 기본비/개'],['sheet.bendUnit','절곡 1회 단가'],['sheet.holeUnit','판금 홀/타공 1개'],['cnc.hourly','CNC 시간당 단가'],['cnc.hourPerKg','CNC kg당 시간'],['cnc.setup','CNC 셋업비'],['cnc.holeTapUnit','CNC 홀/탭 1개'],['lathe.hourly','선반 시간당 단가'],['injection.hourly','사출 시간당 단가'],['print3d.hourly','3D프린팅 시간당 단가'],['profile.cutUnit','압출 절단 1회'],['profile.tapUnit','압출 탭 1개']];
+function renderMaterialRates(){ const mat=state.rates.materials; $('materialRateEditor').innerHTML=`<table class="rate-table"><thead><tr><th>재질</th><th>판재 kg</th><th>CNC/선반 kg</th><th>사출 kg</th><th>3D kg</th><th>압출 kg</th></tr></thead><tbody>${MATERIALS.map(m=>`<tr><td><b>${m}</b></td>${['sheet','cnc','injection','print3d','profile'].map(k=>`<td><input data-rate="mat" data-mat="${m}" data-key="${k}" type="number" value="${mat[m]?.[k]||0}"></td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  $('materialRateEditor').querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ state.rates.materials[i.dataset.mat][i.dataset.key]=num(i.value); recalcAll(); renderParts(); renderSelected(); }));
+}
+function renderProcessRates(){ const lines=[
+  ['commonHourly','공통 시간당 단가'],
+  ['sheet.bendUnit','판금 절곡 1회 단가'],
+  ['cnc.setup','CNC 셋업비'],
+  ['lathe.setup','선반 셋업비'],
+  ['injection.setup','사출 셋업비'],
+  ['print3d.setup','3D프린팅 셋업비'],
+  ['profile.processPerEa','압출/프로파일 가공비/개'],
+  ['sheet.margin','판금 마진%'],['cnc.margin','CNC 마진%'],['lathe.margin','선반 마진%'],['injection.margin','사출 마진%'],['print3d.margin','3D프린팅 마진%'],['profile.margin','압출 마진%'],['purchase.margin','구매품 마진%']
+];
   $('processRateEditor').innerHTML=lines.map(([path,label])=>`<div class="rate-line"><label>${label}</label><input data-path="${path}" type="number" step="0.01" value="${getPath(state.rates.process,path)}"></div>`).join('');
-  $('processRateEditor').querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ setPath(state.rates.process,i.dataset.path,num(i.value)); recalcAll(); renderParts(); renderSelected(); })); }
-function getPath(o,path){ return path.split('.').reduce((a,k)=>a?.[k],o)??0; } function setPath(o,path,v){ const a=path.split('.'); let cur=o; for(let i=0;i<a.length-1;i++) cur=cur[a[i]]; cur[a.at(-1)]=v; }
+  $('processRateEditor').querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ setPath(state.rates.process,i.dataset.path,num(i.value)); syncMarginsFromRates(); recalcAll(); renderParts(); renderSelected(); }));
+}
+function getPath(o,path){ return path.split('.').reduce((a,k)=>a?.[k],o)??0; }
+function setPath(o,path,v){ const a=path.split('.'); let cur=o; for(let i=0;i<a.length-1;i++) cur=cur[a[i]]; cur[a.at(-1)]=v; }
+function syncMarginsFromRates(){ state.parts.forEach(p=>{ if(state.rates.process[p.process]?.margin!==undefined) p.margin=state.rates.process[p.process].margin; }); }
+function saveRatesToBrowser(){ localStorage.setItem('factoryStepRates', JSON.stringify(state.rates)); setMessage('ok','단가표를 브라우저에 저장했습니다. 다음 접속 시 자동 적용됩니다.'); }
+function downloadRates(){ const blob=new Blob([JSON.stringify(state.rates,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='factory-rates.json'; a.click(); URL.revokeObjectURL(a.href); }
+async function importRatesFile(e){ const f=e.target.files?.[0]; if(!f)return; try{ const obj=JSON.parse(await f.text()); state.rates=obj; mergeDefaults(state.rates,DEFAULT_RATES); renderRateEditors(); syncMarginsFromRates(); recalcAll(); renderParts(); renderSelected(); setMessage('ok','단가표를 불러왔습니다.'); }catch(err){ setMessage('err','단가표 JSON을 읽지 못했습니다.'); } }
+function copyRates(){ const txt=JSON.stringify(state.rates,null,2); $('ratesPaste').value=txt; navigator.clipboard?.writeText(txt); setMessage('ok','단가표 JSON을 복사했습니다.'); }
+function pasteRates(){ try{ const obj=JSON.parse($('ratesPaste').value); state.rates=obj; mergeDefaults(state.rates,DEFAULT_RATES); renderRateEditors(); syncMarginsFromRates(); recalcAll(); renderParts(); renderSelected(); setMessage('ok','붙여넣은 단가표를 적용했습니다.'); }catch{ setMessage('err','붙여넣은 내용이 올바른 JSON이 아닙니다.'); } }
+
 function updateStats(){ $('statAssembly').textContent=state.assemblyName||'-'; $('statParts').textContent=state.parts.length; $('statMeshes').textContent=state.meshObjects.length; $('statTotal').textContent=won(state.parts.reduce((s,p)=>s+p.quote,0)); }
 function renderDebug(obj){ $('debugPre').textContent=JSON.stringify(obj||state.debug,null,2); }
-function exportCsv(){ const rows=[['파트','수량','공법','재질','kg/개','시간/개','홀수','절곡수','구매단가','마진%','견적가']].concat(state.parts.map(p=>[p.name,p.qty,PROCESS_LABELS[p.process],p.material,p.kgPerEa,p.timePerEa,p.holes,p.bends,p.purchaseUnit,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote.csv'; a.click(); URL.revokeObjectURL(a.href); }
+function exportCsv(){ const rows=[['파트','수량','공법','재질','kg/개','절곡수','시간/개','구매단가','마진%','견적가']].concat(state.parts.map(p=>[p.name,p.qty,PROCESS_LABELS[p.process],p.material,p.kgPerEa,p.bends,p.timePerEa,p.purchaseUnit,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote.csv'; a.click(); URL.revokeObjectURL(a.href); }
