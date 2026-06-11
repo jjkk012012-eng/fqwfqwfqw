@@ -348,7 +348,25 @@ function normalizeFocusGroup(group){
   group.position.set(-center.x*scale,-center.y*scale,-center.z*scale);
   group.updateMatrixWorld(true);
 }
-function visibleBox(){const box=new THREE.Box3(); let has=false; const root=state.three.root; if(!root) return {box,has}; root.updateWorldMatrix(true,true); root.traverse(o=>{if(!o.visible||!o.isMesh||!o.geometry)return; if(!o.geometry.boundingBox)o.geometry.computeBoundingBox(); const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); if(Number.isFinite(b.min.x)){box.union(b);has=true;}}); return {box,has};}
+function isVisibleThroughParents(obj){
+  let p=obj;
+  while(p){ if(p.visible===false) return false; p=p.parent; }
+  return true;
+}
+function visibleBox(){
+  const box=new THREE.Box3(); let has=false;
+  const target = state.focusClone || state.three.root;
+  if(!target) return {box,has};
+  target.updateWorldMatrix(true,true);
+  target.traverse(o=>{
+    if(!o.isMesh || !o.geometry) return;
+    if(!isVisibleThroughParents(o)) return;
+    if(!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld);
+    if(Number.isFinite(b.min.x)){box.union(b);has=true;}
+  });
+  return {box,has};
+}
 function fitCamera(){
   const {camera,controls}=state.three; if(!camera) return;
   const {box,has}=visibleBox(); if(!has)return;
@@ -356,9 +374,10 @@ function fitCamera(){
   box.getSize(size); box.getCenter(center);
   const maxDim=Math.max(size.x,size.y,size.z,1);
   const fov=(camera.fov||38)*Math.PI/180;
-  const dist=(maxDim/(2*Math.tan(fov/2)))*1.02;
-  camera.position.set(center.x+dist*.92, center.y+dist*.55, center.z+dist*.88);
-  camera.near=.01; camera.far=Math.max(100000, dist*20); camera.updateProjectionMatrix();
+  const dist=(maxDim/(2*Math.tan(fov/2)))*1.12;
+  // Always frame the selected part, not the assembly. Use its real mapped mesh bounding box.
+  camera.position.set(center.x+dist*.85, center.y+dist*.58, center.z+dist*.92);
+  camera.near=Math.max(.001, dist/10000); camera.far=Math.max(100000, dist*30); camera.updateProjectionMatrix();
   if(controls){controls.target.copy(center); controls.update();}
 }
 

@@ -6,3 +6,5 @@ STEP 견적 자동 산출 V38
 - 구매품도 STEP 안에 mesh가 있으면 표시됩니다.
 - OCCT leaf 파싱 실패 시에만 텍스트 파서 fallback을 사용합니다.
 - GitHub Pages 업로드: ZIP 내용물을 저장소 root에 덮어쓰기 후 Commit/Push.
+
+V39: selected part framing fix. Camera uses the mapped selected mesh only and ignores hidden original assembly meshes.
