@@ -599,7 +599,7 @@ function findMeshMetrics(name){ const n=norm(name); return state.meshObjects.fin
 function isNumberishMesh(name){ const n=norm(name); return /^#?\d+$/.test(String(name).trim()) || /^MESH[_-]?\d+$/i.test(String(name).trim()) || /^MESH\d+$/.test(n); }
 
 function computeMeshMetrics(raw, geom){
-  const pos=raw.attributes?.position?.array||[], idx=raw.index?.array||[]; const m={dims:[0,0,0],minDim:0,midDim:0,maxDim:0,bboxVolume:0,volume:0,area:0,solidness:0,flatness:0,slenderness:0,cylinderLike:false,sheetLike:false,holeScore:0,bendSignal:0};
+  const pos=raw.attributes?.position?.array||[], idx=raw.index?.array||[]; const m={dims:[0,0,0],minDim:0,midDim:0,maxDim:0,bboxVolume:0,volume:0,area:0,solidness:0,flatness:0,slenderness:0,cylinderLike:false,sheetLike:false,uniformSheet:false,holeScore:0,bendSignal:0};
   try{
     let min=[Infinity,Infinity,Infinity], max=[-Infinity,-Infinity,-Infinity]; for(let i=0;i<pos.length;i+=3){ for(let k=0;k<3;k++){ const v=pos[i+k]; if(v<min[k])min[k]=v; if(v>max[k])max[k]=v; } }
     const d=[max[0]-min[0],max[1]-min[1],max[2]-min[2]].map(v=>Math.max(0,v)); const s=[...d].sort((a,b)=>a-b); Object.assign(m,{dims:d,minDim:s[0]||0,midDim:s[1]||0,maxDim:s[2]||0,bboxVolume:d[0]*d[1]*d[2]});
@@ -609,7 +609,11 @@ function computeMeshMetrics(raw, geom){
       const key=`${Math.round(Math.abs(N[0]/len)/.18)}:${Math.round(Math.abs(N[1]/len)/.18)}:${Math.round(Math.abs(N[2]/len)/.18)}`; normals.set(key,(normals.get(key)||0)+triArea);
       [[idx[t*3],idx[t*3+1]],[idx[t*3+1],idx[t*3+2]],[idx[t*3+2],idx[t*3]]].forEach(e=>{ const k=e[0]<e[1]?`${e[0]}-${e[1]}`:`${e[1]}-${e[0]}`; edgeMap.set(k,(edgeMap.get(k)||0)+1); });
     }
-    m.area=area; m.volume=Math.abs(vol); m.solidness=m.bboxVolume?Math.min(1,m.volume/m.bboxVolume):0; m.flatness=m.minDim?m.maxDim/m.minDim:0; m.slenderness=m.midDim?m.maxDim/m.midDim:0; m.cylinderLike=m.minDim&&m.midDim&&(m.midDim/m.minDim<1.35)&&(m.maxDim/m.midDim>2.2); m.sheetLike=m.minDim>0&&m.maxDim/m.minDim>9&&m.midDim/m.minDim>3;
+    m.area=area; m.volume=Math.abs(vol); m.solidness=m.bboxVolume?Math.min(1,m.volume/m.bboxVolume):0; m.flatness=m.minDim?m.maxDim/m.minDim:0; m.slenderness=m.midDim?m.maxDim/m.midDim:0; m.cylinderLike=m.minDim&&m.midDim&&(m.midDim/m.minDim<1.35)&&(m.maxDim/m.midDim>2.2);
+    // 판재 판정: 두께(minDim)가 일정한 얇은 판이면, 꺾였든 평판이든 판금/절곡 공법으로 본다.
+    m.uniformSheet=m.minDim>0 && m.minDim<=8 && m.maxDim/m.minDim>=6 && m.midDim/m.minDim>=2.2 && !m.cylinderLike;
+    m.sheetLike=m.minDim>0&&m.maxDim/m.minDim>9&&m.midDim/m.minDim>3;
+    if(m.uniformSheet) m.sheetLike=true;
     const sig=[...normals.values()].filter(v=>area&&v/area>.05).length; m.bendSignal=Math.max(0,sig-2); const boundary=[...edgeMap.values()].filter(c=>c===1).length; m.holeScore=Math.max(0,Math.round(boundary/35));
   }catch(e){console.warn('metric error',e);} return m;
 }
@@ -694,14 +698,18 @@ function classify(p){
   if(/SHAFT|PIN|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPINDLE|SLEEVE/.test(up) && !purchaseStrong) add('lathe',120,'축/핀/부싱류 이름');
   if(m.cylinderLike && !purchaseStrong) add('lathe',65,'길쭉한 회전체 형상');
 
-  // 4) 판금/절곡: 이름과 얇은 판재형이 같이 맞으면 강하게 추천. 절곡 횟수는 공장장이 입력한다.
+  // 4) 판금/절곡: 핵심 규칙은 '같은 두께의 판재면, 꺾였든 안 꺾였든 판금'이다.
+  // 절곡수는 별도 입력값이다. 평판이면 판금/절곡 공법 + 절곡수 0, 꺾인 판이면 판금/절곡 공법 + 절곡수 입력.
   const sheetNameStrong=/HOOD|COVER|PANEL|SHEET|SKEL|BODY|SIDE|TOP|BRACKET|PLATE_COVER|DUCT|CASE_PANEL|WATER[_-]?BOTTLE/.test(up);
-  const thickHint=/12T|15T|20T|25T|30T|BLOCK|BASE|JIG/.test(up);
-  if(sheetNameStrong && !purchaseStrong){ add('sheet',60,'판금/커버/후드/패널류 이름'); }
-  if(m.sheetLike && !purchaseStrong){ add('sheet',95,'얇은 판재형 mesh'); }
-  if(/BEND|BENT|FOLD|FLANGE|절곡/.test(up)){ add('sheet',70,'절곡/플랜지 이름 힌트'); }
-  if(/HOOD_BODY|HOOD_SKEL|TOP_COVER|WATER_BOTTLE_SIDE|WATER_BOTTLE_TOP/.test(up)){ add('sheet',55,'제품명 규칙: 판금 부품군'); }
-  if(thickHint && !/HOOD|COVER|PANEL|SHEET/.test(up)){ score.sheet-=35; }
+  const thickHint=/(0\.5|0\.8|1|1\.2|1\.5|2|2\.3|3|4|5|6|8|9|10|12|15|20|25|30)T|12T|15T|20T|25T|30T/.test(up);
+  if(m.uniformSheet && !purchaseStrong){ add('sheet',180,'같은 두께가 유지되는 판재형 mesh'); }
+  else if(m.sheetLike && !purchaseStrong){ add('sheet',150,'얇고 넓은 판재형 mesh'); }
+  if(sheetNameStrong && !purchaseStrong){ add('sheet',85,'판금/커버/후드/패널류 이름'); }
+  if(/BEND|BENT|FOLD|FLANGE|절곡/.test(up)){ add('sheet',65,'절곡/플랜지 이름 힌트'); }
+  if(/HOOD_BODY|HOOD_SKEL|TOP_COVER|WATER_BOTTLE_SIDE|WATER_BOTTLE_TOP/.test(up)){ add('sheet',80,'제품명 규칙: 판금 부품군'); }
+  if(thickHint && sheetNameStrong && !purchaseStrong){ add('sheet',35,'두께 T 표기 + 판재류 이름'); }
+  // 단, 이름만 두껍고 형상이 덩어리형이면 CNC 후보로 남겨둔다. 판재형 mesh면 판금 우선.
+  if(thickHint && !m.sheetLike && !/HOOD|COVER|PANEL|SHEET|SKEL|BODY|SIDE|TOP|BRACKET/.test(up)){ score.sheet-=35; }
 
   // 5) CNC/MCT: 표준품, 프로파일, 선반, 명확한 판금을 제외하고 남는 플레이트/블록/지그류.
   if(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|PLATE|BRACKET|BY2/.test(up) && !purchaseStrong){ add('cnc',70,'플레이트/지그/가공품 이름'); }
@@ -718,7 +726,7 @@ function classify(p){
   if(score.purchase>=140){ score.sheet-=120; score.cnc-=110; score.profile-=90; score.lathe-=70; score.injection-=40; score.print3d-=40; }
   if(score.profile>=120){ score.sheet-=90; score.cnc-=70; score.purchase-=10; }
   if(score.lathe>=100){ score.sheet-=90; score.cnc-=25; }
-  if(score.sheet>=115){ score.cnc-=45; score.profile-=45; }
+  if(score.sheet>=115){ score.cnc-=80; score.profile-=45; score.injection-=20; score.print3d-=20; }
 
   const entries=Object.entries(score).sort((a,b)=>b[1]-a[1]);
   const [best,bscore]=entries[0];
@@ -729,7 +737,7 @@ function classify(p){
   if(bscore<55 || gap<18) process='unknown';
   // 구매품/강한 판금/강한 CNC는 예외적으로 확정
   if(score.purchase>=150) process='purchase';
-  else if(score.sheet>=135 && gap>=10) process='sheet';
+  else if(score.sheet>=135 && gap>=0) process='sheet';
   else if(score.cnc>=130 && gap>=10) process='cnc';
 
   const confidenceScore = Math.max(0, Math.min(100, Math.round((bscore/180)*70 + Math.min(gap,60)/60*30)));
