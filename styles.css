@@ -156,3 +156,18 @@ tr.selected{background:#eef4ff!important;box-shadow:inset 3px 0 0 var(--accent)}
 @media(max-width:1280px){.shell{grid-template-columns:1fr}.sidecol{display:grid;grid-template-columns:1fr 1.25fr;position:static;max-height:none;overflow:visible}.viewer{height:540px;min-height:440px}}
 @media(max-width:860px){.sidecol{display:block}.viewer{height:500px;min-height:400px}.shell{padding:10px}.app-header{margin:10px 10px 0}.table-wrap{max-height:520px}}
 @media(max-width:560px){.app-header{padding:14px;border-radius:15px}.app-header h1{font-size:16px!important}.logo-mark{width:36px!important;height:36px!important}.viewer{height:430px;min-height:360px}button{padding:7px 9px}.shell{padding:10px}}
+
+/* V50 easy input: editing without scroll jump */
+.edit-card{background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dfe7f2}
+.quick-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+.quick-edit-grid label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:850;color:#667085;letter-spacing:-.01em}
+.quick-edit-grid input,.quick-edit-grid select{width:100%;min-width:0;border:1px solid #d8e1ee;border-radius:9px;background:#fff;padding:7px 8px;font-size:11.5px;font-weight:850;color:#111827;outline:none;transition:border-color .12s ease, box-shadow .12s ease}
+.quick-edit-grid input:focus,.quick-edit-grid select:focus,td input:focus,td select:focus{border-color:#3b6bff!important;box-shadow:0 0 0 3px rgba(59,107,255,.12)!important}
+.quick-edit-grid label:nth-child(1),.quick-edit-grid label:nth-child(4),.quick-edit-grid label:nth-child(5),.quick-edit-grid label:nth-child(6),.quick-edit-grid label:nth-child(7),.quick-edit-grid label:nth-child(8){grid-column:auto}
+.selected-panel{border-color:#cad8ed;background:#fff}
+.selected-panel .panel-title{padding-bottom:7px;border-bottom:1px solid #edf1f6;margin-bottom:8px}
+.table-wrap{scroll-behavior:auto!important;overscroll-behavior:contain}
+td input,td select{outline:none}
+tr.selected td{background:#eef4ff!important}
+@media(max-width:1280px){.quick-edit-grid{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:860px){.quick-edit-grid{grid-template-columns:1fr 1fr}.sidecol{display:flex;flex-direction:column}.selected-panel{order:-1}}

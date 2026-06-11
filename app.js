@@ -168,7 +168,7 @@ function bindEvents(){
   $('csvBtn').onclick=downloadCSV;
   $('addPartBtn').onclick=addManualPart;
   $('fitButton').onclick=()=>fitCamera(true);
-  document.querySelectorAll('.quick-grid button').forEach(b=>b.onclick=()=>{const p=selectedPart(); if(p){applyProcess(p,b.dataset.proc); renderAll(); showPart(p);}});
+  document.querySelectorAll('.quick-grid button').forEach(b=>b.onclick=()=>{const p=selectedPart(); if(p){applyProcess(p,b.dataset.proc); replaceRow(p); renderSelected(); updateStats(); showPart(p);}});
   $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v50', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
   $('downloadRatesBtn').onclick=downloadRates;
   $('loadRatesBtn').onclick=()=>$('rateFileInput').click();
@@ -877,16 +877,57 @@ function renderParts(){
   updateSortHeaders();
   const body=$('partsBody');
   if(!state.parts.length){body.innerHTML='<tr><td colspan="9" class="empty-row">업로드 후 파트가 표시됩니다.</td></tr>';return;}
-  updateSortHeaders();
   body.innerHTML=sortedParts().map(p=>rowHTML(p)).join('');
-  body.querySelectorAll('tr[data-id]').forEach(tr=>{
-    tr.onclick=e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); };
-  });
-  body.querySelectorAll('[data-act]').forEach(el=>{
-    el.onchange=el.oninput=e=>handleCell(e.target);
+  body.querySelectorAll('tr[data-id]').forEach(bindRowEvents);
+}
+function bindRowEvents(tr){
+  if(!tr) return;
+  tr.onclick=e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); };
+  tr.querySelectorAll('[data-act]').forEach(el=>{
+    el.addEventListener('focus',()=>softSelectPart(el.dataset.id));
     if(el.tagName==='SELECT') el.onchange=e=>handleCell(e.target);
+    else {
+      el.oninput=e=>handleCell(e.target,{live:true});
+      el.onchange=e=>handleCell(e.target,{commit:true});
+    }
   });
-  body.querySelectorAll('.delbtn').forEach(b=>b.onclick=e=>{e.stopPropagation(); removePart(b.dataset.id);});
+  const del=tr.querySelector('.delbtn');
+  if(del) del.onclick=e=>{e.stopPropagation(); removePart(del.dataset.id);};
+}
+function markSelectedRow(){
+  const body=$('partsBody');
+  if(!body) return;
+  body.querySelectorAll('tr[data-id]').forEach(tr=>tr.classList.toggle('selected', tr.dataset.id===state.selectedId));
+}
+function softSelectPart(id){
+  if(!id || state.selectedId===id) return;
+  state.selectedId=id;
+  markSelectedRow();
+  renderSelected();
+}
+function updateRowPrice(part){
+  const row=document.querySelector(`tr[data-id="${CSS.escape(part.id)}"]`);
+  if(row){
+    const price=row.querySelector('.price');
+    if(price) price.textContent=won(part.quote);
+    const qty=row.querySelector('[data-act="qty"]'); if(qty && document.activeElement!==qty) qty.value=part.qty;
+    const inp=row.querySelector('[data-act="input"]'); if(inp && document.activeElement!==inp) inp.value=part.process==='purchase'?num(part.purchaseUnit||part.inputValue):num(part.inputValue);
+    const mar=row.querySelector('[data-act="margin"]'); if(mar && document.activeElement!==mar) mar.value=part.margin;
+  }
+  updateSelectedLive(part);
+}
+function replaceRow(part){
+  const row=document.querySelector(`tr[data-id="${CSS.escape(part.id)}"]`);
+  if(!row) { renderParts(); return; }
+  row.outerHTML=rowHTML(part);
+  const next=document.querySelector(`tr[data-id="${CSS.escape(part.id)}"]`);
+  bindRowEvents(next);
+}
+function updateSelectedLive(part){
+  if(!part || part.id!==state.selectedId) return;
+  const q=$('sideQuote'); if(q) q.value=won(part.quote);
+  const w=$('sideWeight'); if(w && document.activeElement!==w) w.value=kgEach(part).toFixed(4);
+  const rowQ=$('statTotal'); if(rowQ) updateStats();
 }
 function rowHTML(p){
   const rec=p.score||{confidence:'낮음',score:0,reasons:[]};
@@ -904,20 +945,84 @@ function rowHTML(p){
     <td><button class="delbtn" data-id="${p.id}">삭제</button></td>
   </tr>`;
 }
-function handleCell(el){const p=state.parts.find(x=>x.id===el.dataset.id); if(!p)return; const act=el.dataset.act; if(act==='qty')p.qty=num(el.value,1); if(act==='process'){applyProcess(p,el.value); saveLearnedProcess(p);} if(act==='material')p.material=el.value; if(act==='input'){ if(p.process==='purchase')p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0);} if(act==='margin')p.margin=num(el.value,0); recalcPart(p); renderAll(); if(p.id===state.selectedId) showPart(p);}
-function selectPart(id){state.selectedId=id; renderParts(); renderSelected(); const p=selectedPart(); if(p)showPart(p);}
+function handleCell(el,opts={}){
+  const p=state.parts.find(x=>x.id===el.dataset.id); if(!p)return;
+  const act=el.dataset.act;
+  if(act==='qty') p.qty=num(el.value,1);
+  if(act==='process'){ applyProcess(p,el.value); replaceRow(p); renderSelected(); updateStats(); return; }
+  if(act==='material') p.material=el.value;
+  if(act==='input'){ if(p.process==='purchase') p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0); }
+  if(act==='margin') p.margin=num(el.value,0);
+  recalcPart(p);
+  updateStats();
+  updateRowPrice(p);
+  syncSideInputs(p, act);
+}
+function selectPart(id){
+  state.selectedId=id;
+  markSelectedRow();
+  renderSelected();
+  const p=selectedPart();
+  if(p)showPart(p);
+}
 function removePart(id){state.parts=state.parts.filter(p=>p.id!==id); if(state.selectedId===id)state.selectedId=state.parts[0]?.id||null; recalcAll(); renderAll(); if(state.selectedId)showPart(selectedPart());}
 function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual'},state.parts.length); p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll();}
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
-  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">견적 계산값은 공법·재질·수량·입력값 수정 시 즉시 반영됩니다.</div><div class="details-grid">
-    <div><label>예상중량 kg/개</label><input id="selWeight" value="${kgEach(p).toFixed(4)}"></div>
-    <div><label>크기 mm</label><input value="${esc(dims||'-')}" disabled></div>
-    <div><label>체적 cm³</label><input value="${volumeCm3(p).toFixed(2)}" disabled></div>
-    <div><label>견적가</label><input value="${won(p.quote)}" disabled></div>
-  </div></div>`;
-  const w=$('selWeight'); if(w) w.onchange=()=>{p.manualWeight=num(w.value,null); recalcPart(p); renderParts(); renderSelected(); updateStats();};
+  const inputLabel = p.process==='purchase'?'구매단가':p.process==='sheet'?'절곡수':['cnc','lathe','injection','print3d'].includes(p.process)?'시간/개':p.process==='profile'?'가공비/개':'입력값';
+  const inputVal = p.process==='purchase'?num(p.purchaseUnit||p.inputValue):num(p.inputValue);
+  box.innerHTML=`<div class="selected-card edit-card">
+    <b>${esc(p.name)}</b>
+    <div class="muted">선택한 파트만 여기서 빠르게 수정합니다. 표가 위로 튀지 않습니다.</div>
+    <div class="quick-edit-grid">
+      <label>수량<input id="sideQty" data-side-act="qty" value="${p.qty}"></label>
+      <label>공법<select id="sideProcess" data-side-act="process">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></label>
+      <label>재질<select id="sideMaterial" data-side-act="material">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></label>
+      <label>${inputLabel}<input id="sideInput" data-side-act="input" value="${inputVal}"></label>
+      <label>마진%<input id="sideMargin" data-side-act="margin" value="${p.margin}"></label>
+      <label>예상중량 kg/개<input id="sideWeight" data-side-act="weight" value="${kgEach(p).toFixed(4)}"></label>
+      <label>크기 mm<input value="${esc(dims||'-')}" disabled></label>
+      <label>견적가<input id="sideQuote" value="${won(p.quote)}" disabled></label>
+    </div>
+  </div>`;
+  box.querySelectorAll('[data-side-act]').forEach(el=>{
+    if(el.tagName==='SELECT') el.onchange=e=>handleSideEdit(e.target);
+    else { el.oninput=e=>handleSideEdit(e.target,{live:true}); el.onchange=e=>handleSideEdit(e.target,{commit:true}); }
+  });
+}
+function handleSideEdit(el,opts={}){
+  const p=selectedPart(); if(!p) return;
+  const act=el.dataset.sideAct;
+  if(act==='qty') p.qty=num(el.value,1);
+  if(act==='process'){ applyProcess(p,el.value); replaceRow(p); renderSelected(); updateStats(); return; }
+  if(act==='material') p.material=el.value;
+  if(act==='input'){ if(p.process==='purchase') p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0); }
+  if(act==='margin') p.margin=num(el.value,0);
+  if(act==='weight') p.manualWeight=num(el.value,null);
+  recalcPart(p);
+  updateStats();
+  updateRowPrice(p);
+  syncRowInputs(p, act);
+}
+function syncSideInputs(p, changedAct){
+  if(!p || p.id!==state.selectedId) return;
+  const map={qty:'sideQty',material:'sideMaterial',input:'sideInput',margin:'sideMargin'};
+  const id=map[changedAct];
+  if(id){ const el=$(id); if(el && document.activeElement!==el){
+    if(changedAct==='input') el.value=p.process==='purchase'?num(p.purchaseUnit||p.inputValue):num(p.inputValue);
+    else el.value=p[changedAct];
+  }}
+}
+function syncRowInputs(p, changedAct){
+  const row=document.querySelector(`tr[data-id="${CSS.escape(p.id)}"]`); if(!row) return;
+  const map={qty:'qty',material:'material',input:'input',margin:'margin'};
+  const act=map[changedAct]; if(!act) return;
+  const el=row.querySelector(`[data-act="${act}"]`);
+  if(el && document.activeElement!==el){
+    if(act==='input') el.value=p.process==='purchase'?num(p.purchaseUnit||p.inputValue):num(p.inputValue);
+    else el.value=p[changedAct];
+  }
 }
 function renderRates(){renderMaterialRates();renderProcessRates();renderMarginRates();}
 function renderMaterialRates(){
