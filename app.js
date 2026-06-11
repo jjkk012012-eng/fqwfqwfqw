@@ -1,4 +1,4 @@
-/* 공장용 STEP 견적 계산기 Real Viewer V7 - product name map + bend geometry classifier */
+/* 공장용 STEP 견적 계산기 Real Viewer V8 - improved leaf name grouping + bend patch classifier */
 const $ = (id) => document.getElementById(id);
 const state = {
   fileName: '',
@@ -174,7 +174,7 @@ function computeMeshMetrics(rawMesh, geom){
     dims:[0,0,0], sortedDims:[0,0,0], minDim:0, midDim:0, maxDim:0,
     bboxVolumeMm3:0, surfaceAreaMm2:0, volumeMm3:0, solidness:0,
     flatness:0, slenderness:0, cylinderLike:false, flatPlateLike:false,
-    normalClusterCount:0, majorPlaneDirections:0, dominantPlaneDirections:0, normalComplexity:0, triangleCount: Math.floor((idx.length||0)/3)
+    normalClusterCount:0, majorPlaneDirections:0, dominantPlaneDirections:0, normalComplexity:0, bendPatchCount:0, bendPatchDebug:'', triangleCount: Math.floor((idx.length||0)/3)
   };
   try{
     let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
@@ -224,8 +224,104 @@ function computeMeshMetrics(rawMesh, geom){
     metrics.normalComplexity=Math.min(1, significant.length/8);
     metrics.cylinderLike = metrics.minDim>0 && metrics.midDim>0 && (metrics.midDim/metrics.minDim < 1.28) && (metrics.maxDim/metrics.midDim > 2.2);
     metrics.flatPlateLike = metrics.minDim>0 && metrics.maxDim/metrics.minDim>7 && metrics.midDim/metrics.minDim>2.2;
+    const bendEstimate = estimateBendPatchesFromTriangles(pos, idx, metrics, area);
+    metrics.bendPatchCount = bendEstimate.count;
+    metrics.bendPatchDebug = bendEstimate.debug;
   }catch(e){ console.warn('metrics fail', e); }
   return metrics;
+}
+
+// 절곡 후보 추정 V8
+// 목적: 단순히 "판면 방향이 2개"라고 1회로 줄이지 않고, 같은 방향의 플랜지가 여러 위치에 떨어져 있으면 각각 별도 절곡으로 본다.
+// 방법: 가장 넓은 판면 방향을 기준판으로 잡고, 기준판과 다른 방향의 얇은 판 패치를 "법선 방향 + 위치(offset)"로 묶어서 카운트한다.
+function estimateBendPatchesFromTriangles(pos, idx, metrics, totalArea){
+  const out = {count:0, debug:''};
+  try{
+    if(!pos || !idx || idx.length < 9 || !metrics) return out;
+    const minDim = Number(metrics.minDim)||0, maxDim=Number(metrics.maxDim)||0, midDim=Number(metrics.midDim)||0;
+    const sheetCandidate = minDim>0 && minDim<=8 && maxDim/minDim>6 && midDim/minDim>1.8;
+    if(!sheetCandidate) return out;
+
+    const maxTris = Math.floor(idx.length/3);
+    const sampleStep = Math.max(1, Math.floor(maxTris/24000));
+    const dirs = new Map();
+    const tris = [];
+    let sampledArea = 0;
+
+    for(let t=0;t<maxTris;t+=sampleStep){
+      const ia=idx[t*3]*3, ib=idx[t*3+1]*3, ic=idx[t*3+2]*3;
+      const ax=pos[ia], ay=pos[ia+1], az=pos[ia+2];
+      const bx=pos[ib], by=pos[ib+1], bz=pos[ib+2];
+      const cx=pos[ic], cy=pos[ic+1], cz=pos[ic+2];
+      if(!Number.isFinite(ax+ay+az+bx+by+bz+cx+cy+cz)) continue;
+      const abx=bx-ax, aby=by-ay, abz=bz-az;
+      const acx=cx-ax, acy=cy-ay, acz=cz-az;
+      let nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+      const len=Math.hypot(nx,ny,nz); if(len<=1e-9) continue;
+      const triArea=(len/2)*sampleStep; if(triArea<=0) continue;
+      // opposite normal은 같은 판면 방향으로 취급. 절곡 횟수는 방향보다 "위치가 다른 플랜지 패치 수"가 중요함.
+      let ux=Math.abs(nx/len), uy=Math.abs(ny/len), uz=Math.abs(nz/len);
+      const vlen=Math.hypot(ux,uy,uz)||1; ux/=vlen; uy/=vlen; uz/=vlen;
+      const dirKey=`${Math.round(ux/0.14)}:${Math.round(uy/0.14)}:${Math.round(uz/0.14)}`;
+      const cxm=(ax+bx+cx)/3, cym=(ay+by+cy)/3, czm=(az+bz+cz)/3;
+      tris.push({ux,uy,uz,dirKey,area:triArea,cx:cxm,cy:cym,cz:czm});
+      sampledArea += triArea;
+      const d=dirs.get(dirKey)||{area:0,ux,uy,uz}; d.area+=triArea; dirs.set(dirKey,d);
+    }
+    if(!tris.length || !dirs.size) return out;
+    const dirList=[...dirs.values()].sort((a,b)=>b.area-a.area);
+    const base=dirList[0];
+    if(!base || base.area <= 0) return out;
+    const bx=base.ux, by=base.uy, bz=base.uz;
+    const angleFromBase = (tr) => Math.abs(tr.ux*bx + tr.uy*by + tr.uz*bz);
+
+    // 같은 플랜지의 앞/뒤 두 면은 두께만큼 떨어져 있으므로 같은 패치로 묶어야 한다.
+    // 단, 서로 다른 플랜지는 수십~수백 mm 떨어져 있으므로 offset bin을 충분히 작게 둔다.
+    const offsetBin = Math.max(6, Math.min(28, minDim*6 || 10));
+    const patchMap = new Map();
+    for(const tr of tris){
+      // 기준판과 거의 평행한 면은 절곡 패치가 아님. 구멍/작은 모따기 노이즈도 뒤에서 area로 제거.
+      if(angleFromBase(tr) > 0.86) continue; // 약 30도 이내 평행 제외
+      const off = tr.ux*tr.cx + tr.uy*tr.cy + tr.uz*tr.cz;
+      const offKey = Math.round(off/offsetBin);
+      const patchKey = `${tr.dirKey}|${offKey}`;
+      const p = patchMap.get(patchKey)||{area:0, dir:tr.dirKey, offKey, minx:Infinity,maxx:-Infinity,miny:Infinity,maxy:-Infinity,minz:Infinity,maxz:-Infinity};
+      p.area += tr.area;
+      if(tr.cx<p.minx)p.minx=tr.cx; if(tr.cx>p.maxx)p.maxx=tr.cx;
+      if(tr.cy<p.miny)p.miny=tr.cy; if(tr.cy>p.maxy)p.maxy=tr.cy;
+      if(tr.cz<p.minz)p.minz=tr.cz; if(tr.cz>p.maxz)p.maxz=tr.cz;
+      patchMap.set(patchKey,p);
+    }
+    const minPatchArea = Math.max(80, sampledArea*0.006); // 작은 홀 벽/모따기 노이즈 제거, 작은 귀는 남김
+    let patches=[...patchMap.values()].filter(p=>{
+      const span = Math.max(p.maxx-p.minx, p.maxy-p.miny, p.maxz-p.minz);
+      return p.area >= minPatchArea && span >= Math.max(8, minDim*5);
+    });
+
+    // 너무 가까운 offset으로 나뉜 같은 플랜지 병합
+    patches.sort((a,b)=> a.dir.localeCompare(b.dir) || a.offKey-b.offKey);
+    const merged=[];
+    for(const p of patches){
+      const last=merged[merged.length-1];
+      if(last && last.dir===p.dir && Math.abs(last.offKey-p.offKey)<=1){
+        last.area+=p.area;
+        last.minx=Math.min(last.minx,p.minx); last.maxx=Math.max(last.maxx,p.maxx);
+        last.miny=Math.min(last.miny,p.miny); last.maxy=Math.max(last.maxy,p.maxy);
+        last.minz=Math.min(last.minz,p.minz); last.maxz=Math.max(last.maxz,p.maxz);
+      } else merged.push({...p});
+    }
+
+    let count = merged.length;
+    // 안전장치: 얇은 판재에서 서로 다른 큰 면 방향이 2개 이상이고 플랜지 패치가 잡혔으면 그대로 사용.
+    // 단, 홀/노이즈가 많은 경우 12회를 넘기지 않음.
+    count = Math.max(0, Math.min(12, count));
+    out.count = count;
+    out.debug = `baseDir=${base ? `${base.ux.toFixed(2)},${base.uy.toFixed(2)},${base.uz.toFixed(2)}` : '-'} patch=${count} raw=${patchMap.size} bin=${offsetBin.toFixed(1)}`;
+    return out;
+  }catch(e){
+    console.warn('bend patch estimate fail', e);
+    return out;
+  }
 }
 
 function parseStepText(text, fileName){
@@ -425,19 +521,23 @@ function deriveFeatures(name, metrics){
   const thickByName = tName>=10;
   let thickness = tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
 
-  // 절곡 기준: 같은 두께 판재/쉘형 + 서로 다른 큰 평면 방향이 2개 이상이면 1회 이상.
-  // 단순 이름만 COVER/PANEL이면 0회. 두꺼운 블록/구매품은 제외는 분류 단계에서 감점.
+  // 절곡 기준 V8:
+  // 1) OCCT mesh가 있으면, 기준판을 제외한 위치가 다른 플랜지/귀 패치 개수를 우선 사용한다.
+  // 2) 이름만 보고 절곡을 확정하지 않는다. 다만 L/U bracket 같은 명확한 힌트는 최소값을 보정한다.
+  // 3) 같은 두께 판재 + 플랜지 패치 4개이면 절곡 4회로 들어간다.
   let bends = 0;
   const sheetGeometry = (flatPlateLike || shellLike) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName;
+  const patchBends = Number(m.bendPatchCount)||0;
   const directionBasedBends = sheetGeometry && majorPlaneDirections >= 2 ? Math.max(1, Math.min(8, majorPlaneDirections - 1)) : 0;
-  if(sheetGeometry && bendNameHint) bends = Math.max(1, directionBasedBends || 1);
+  if(sheetGeometry && patchBends > 0) bends = patchBends;
+  else if(sheetGeometry && bendNameHint) bends = Math.max(1, directionBasedBends || 1);
   else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = directionBasedBends;
   else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.18) bends = Math.max(1, majorPlaneDirections - 2);
   if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends = Math.max(bends,2);
   if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends = Math.max(bends,1);
 
   const taps = (/TAP|M\d+/.test(n) && !/BOLT|SCREW|NUT/.test(n)) ? 1 : 0;
-  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry};
+  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends};
 }
 
 function round1(v){ return Math.round(v*10)/10; }
@@ -470,6 +570,7 @@ function classifyPartAdvanced(name, f){
   if(f.tName>0 && f.tName<=6) add('sheet',28,`두께명 ${f.tName}T`);
   if(f.tName>12) add('sheet',-35,`두께명 ${f.tName}T: 두꺼워 판금 감점`);
   if(f.bends>0) add('sheet',25,`절곡 후보 ${f.bends}회`);
+  if(f.patchBends>0) add('sheet',18,`mesh 플랜지 패치 ${f.patchBends}개`);
   if(/HOOD|WATER[_ -]?BOTTLE|COVER|PANEL|SIDE|TOP/.test(n)) add('sheet',18,'제품명상 판금 가능성');
 
   // 5) 사출/3D프린팅: 플라스틱 케이스류는 확정하지 않고 낮은 점수만 부여.
@@ -597,7 +698,7 @@ function renderSelected(){
   const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
   panel.innerHTML = `<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3><div class="preview-box">${esc(PROCESS_LABELS[p.process]||p.process)}</div>
     <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">신뢰도 ${esc(p.confidence)}</span></div>
-    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0} / 절곡패치: ${m.bendPatchCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}${m.bendPatchDebug ? '<br>절곡판정: '+esc(m.bendPatchDebug) : ''}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
 function isolateSelectedMesh(p){

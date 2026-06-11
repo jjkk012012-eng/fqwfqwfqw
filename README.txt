@@ -1,4 +1,4 @@
-공장용 STEP 견적 계산기 V7
+공장용 STEP 견적 계산기 V8
 
 수정 핵심
 1) PRODUCT_DEFINITION leaf가 숫자/Next assembly relationship으로 뜨는 문제 보정
@@ -19,3 +19,6 @@
 업로드 방법
 - 이 폴더 안의 index.html, styles.css, app.js, README.txt, data, vendor를 GitHub 저장소 root에 넣으세요.
 - 폴더째 넣지 말고 내용물만 넣어야 GitHub Pages가 정상 작동합니다.
+
+
+V8 수정: 절곡은 판면 방향 수가 아니라 기준판을 제외한 위치별 플랜지/귀 패치 수를 우선 카운트합니다. 얇은 판재에서 4개 플랜지가 있으면 절곡 4회로 잡습니다.
