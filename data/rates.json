@@ -1,1 +1,23 @@
-{"version":"v3-product-definition-map","note":"large dummy data removed; all quote rates are in app.js for GitHub Pages stability"}
+{
+  "materials": {
+    "AL6061": {"market": 6200, "markupMode": "percent", "markup": 15, "density": 2.70},
+    "SUS304": {"market": 4800, "markupMode": "percent", "markup": 18, "density": 7.93},
+    "SS400": {"market": 1300, "markupMode": "amount", "markup": 350, "density": 7.85},
+    "SPCC": {"market": 1200, "markupMode": "amount", "markup": 300, "density": 7.85},
+    "POM": {"market": 7200, "markupMode": "percent", "markup": 20, "density": 1.41},
+    "ABS": {"market": 3900, "markupMode": "percent", "markup": 20, "density": 1.04},
+    "PLA": {"market": 23000, "markupMode": "percent", "markup": 25, "density": 1.24}
+  },
+  "margins": {"분류 필요":0,"구매품":10,"CNC/MCT":22,"선반":20,"판금/절곡":18,"3D프린팅":28,"사출":18,"프로파일/압출":15,"용접":22},
+  "process": {
+    "tapUnit": {"M3":1200,"M4":1500,"M5":1800,"M6":2200,"M8":3200,"M10":4500,"M12":6500,"default":1800},
+    "bendUnitByThickness": [{"max":1.0,"price":1200},{"max":2.0,"price":2200},{"max":3.2,"price":3800},{"max":6.0,"price":6500},{"max":999,"price":10000}],
+    "sheetSetup": 25000,
+    "cncBase": {"small":30000,"medium":70000,"large":150000},
+    "latheBase": 35000,
+    "profileCut": 1000,
+    "profileTap": 1200,
+    "purchaseMinimum": 100,
+    "weldingBase": 50000
+  }
+}

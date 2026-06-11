@@ -1,420 +1,477 @@
-const MATERIALS = {
-  AL6061:{label:'AL6061', price:6200, uplift:1.18}, AL5052:{label:'AL5052', price:5800, uplift:1.15},
-  SS400:{label:'SS400', price:1600, uplift:1.25}, SUS304:{label:'SUS304', price:5200, uplift:1.28},
-  POM:{label:'POM', price:8500, uplift:1.18}, ABS:{label:'ABS', price:4200, uplift:1.2}, PP:{label:'PP', price:2600, uplift:1.18}
-};
-const PROCESSES = ['분류 필요','구매품','프로파일/압출','선반','판금/절곡','CNC/MCT','3D프린팅','사출','용접','제외'];
-const MARGINS = {'CNC/MCT':22,'선반':20,'판금/절곡':18,'3D프린팅':28,'사출':18,'프로파일/압출':15,'용접':22,'구매품':10,'분류 필요':20,'제외':0};
-const APP_VERSION = 'v3.1-product-definition-name-map';
-const RATES = {cncBase:42000, latheBase:28000, sheetBase:22000, printBase:18000, profileBase:12000, weldBase:35000, tap:2200, bend:3500, cut:1200, purchaseDefault:5000};
-let rows = [], originalRows = [], selectedId = null;
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
-const $ = s => document.querySelector(s);
-const fmt = n => Math.round(Number(n)||0).toLocaleString('ko-KR')+'원';
-const clean = s => String(s||'').replace(/\s+/g,' ').trim();
-const stripQuote = s => {
-  s = String(s||'').trim();
-  if(s === '$' || s === '*') return '';
-  if(s.startsWith("'") && s.endsWith("'")) return s.slice(1,-1).replace(/''/g,"'");
-  return s;
-};
-const isGeneric = s => {
-  const x = clean(s).toLowerCase();
-  return !x || ['design','default','part','product','component','assembly','assy','body','unnamed','none','null','next assembly relationship'].includes(x) || /^[-_\d\s]+$/.test(x);
-};
-const chooseName = (...names) => {
-  for(const n of names){ const v=clean(stripQuote(n)); if(v && !isGeneric(v)) return v; }
-  for(const n of names){ const v=clean(stripQuote(n)); if(v) return v; }
-  return '';
+const PROCESS_LIST = ['분류 필요','구매품','CNC/MCT','선반','판금/절곡','3D프린팅','사출','프로파일/압출','용접'];
+const MATERIAL_LIST = ['AL6061','SUS304','SS400','SPCC','POM','ABS','PLA'];
+const state = {
+  rates: null,
+  parts: [],
+  selectedIndex: -1,
+  occtResult: null,
+  meshByPart: new Map(),
+  allMeshes: [],
+  viewerReady: false,
+  scene: null,
+  camera: null,
+  renderer: null,
+  controls: null,
+  modelGroup: null,
+  debug: {}
 };
 
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Math.round(Number(n)||0).toLocaleString('ko-KR') + '원';
+const cleanName = (s) => String(s || '').replace(/^'+|'+$/g,'').replace(/\\X2\\.*?\\X0\\/g,'').trim();
+const normalize = (s) => cleanName(s).replace(/\s+/g,'_').toUpperCase();
+const isGenericName = (s) => /^(DESIGN|NEXT ASSEMBLY RELATIONSHIP|NONE|UNNAMED|PART|PRODUCT|ASSEMBLY|)$/i.test(cleanName(s));
 
-function parseStepEntities(text){
-  const entities = new Map();
-  let i=0, n=text.length;
-  while(i<n){
-    if(text[i] !== '#'){ i++; continue; }
-    let j=i+1, num='';
-    while(j<n && /[0-9]/.test(text[j])) num += text[j++];
-    if(!num){ i++; continue; }
-    while(j<n && /\s/.test(text[j])) j++;
-    if(text[j] !== '='){ i++; continue; }
-    j++;
-    while(j<n && /\s/.test(text[j])) j++;
-    let type='';
-    while(j<n && /[A-Za-z0-9_]/.test(text[j])) type += text[j++].toUpperCase();
-    while(j<n && /\s/.test(text[j])) j++;
-    if(text[j] !== '('){ i=j+1; continue; }
-    let start = j+1, depth=1, inStr=false;
-    j++;
-    for(; j<n; j++){
-      const ch=text[j], nx=text[j+1];
-      if(inStr){
-        if(ch==="'" && nx==="'"){ j++; continue; }
-        if(ch==="'") inStr=false;
-        continue;
-      }
-      if(ch==="'"){ inStr=true; continue; }
-      if(ch==='(') depth++;
-      else if(ch===')'){
-        depth--;
-        if(depth===0){
-          const args = text.slice(start,j);
-          while(j<n && text[j] !== ';') j++;
-          entities.set('#'+num,{id:'#'+num,type,args,params:splitTop(args),num:Number(num)});
-          break;
-        }
-      }
-    }
-    i = j+1;
+window.addEventListener('DOMContentLoaded', async () => {
+  await loadRates();
+  initInputs();
+  initUpload();
+  initViewer();
+  bindButtons();
+});
+
+async function loadRates(){
+  try{
+    const res = await fetch('data/rates.json', {cache:'no-store'});
+    state.rates = await res.json();
+  }catch(e){
+    state.rates = defaultRates();
   }
-  return entities;
 }
-function splitTop(s){
-  const out=[]; let cur='', depth=0, inStr=false;
-  for(let i=0;i<s.length;i++){
-    const ch=s[i], nx=s[i+1];
-    if(inStr){ cur+=ch; if(ch==="'" && nx==="'"){cur+=nx;i++;continue;} if(ch==="'") inStr=false; continue; }
-    if(ch==="'"){ inStr=true; cur+=ch; continue; }
-    if(ch==='('){depth++;cur+=ch;continue;} if(ch===')'){depth--;cur+=ch;continue;}
-    if(ch===',' && depth===0){ out.push(cur.trim()); cur=''; continue; }
-    cur+=ch;
-  }
-  if(cur.trim() || s.endsWith(',')) out.push(cur.trim());
-  return out;
-}
-function refs(s){ return [...String(s||'').matchAll(/#\d+/g)].map(m=>m[0]); }
-function refNum(r){ return Number(String(r||'').replace('#',''))||0; }
-function normalizeKey(s){ return clean(s).toUpperCase().replace(/\s+/g,'_'); }
-function betterName(a,b){
-  const aa=clean(a), bb=clean(b);
-  if(aa && !isGeneric(aa)) return aa;
-  if(bb && !isGeneric(bb)) return bb;
-  return aa || bb || '';
-}
-function nearestProductBefore(id, products, maxGap=8){
-  const n=refNum(id); let best=null, bestGap=Infinity;
-  for(const p of products.values()){
-    const gap=n-refNum(p.id);
-    if(gap>=0 && gap<bestGap && gap<=maxGap){ best=p; bestGap=gap; }
-  }
-  return best;
-}
-function findBestProductRef(entity, products){
-  const rs=refs(entity.args).filter(r=>products.has(r));
-  if(!rs.length) return '';
-  // STEP formation normally has PRODUCT as the last real reference. Prefer the last product ref.
-  return rs[rs.length-1];
-}
-
-function analyzeStep(text){
-  const entities = parseStepEntities(text);
-  const products = new Map(), formations = new Map(), pdefs = new Map();
-  const reps = new Map(), pdsTargets = new Map(), pdRepNames = new Map(), brepNames=[];
-
-  for(const e of entities.values()){
-    if(e.type === 'PRODUCT'){
-      // PRODUCT('part name','id','desc',context). In many CAD exports param0 is the real part name.
-      const nm = chooseName(e.params[0], e.params[1], e.params[2]) || `PRODUCT_${e.id.slice(1)}`;
-      products.set(e.id,{id:e.id,name:nm});
-    }
-  }
-
-  for(const e of entities.values()){
-    if(e.type.startsWith('PRODUCT_DEFINITION_FORMATION')){
-      let productId=findBestProductRef(e, products);
-      if(!productId){
-        const near=nearestProductBefore(e.id, products, 4);
-        productId=near?.id || '';
-      }
-      const p=products.get(productId);
-      formations.set(e.id,{id:e.id, productId, name:p?.name || '', source: productId ? 'formation product ref' : 'unmapped'});
-    }
-  }
-
-  for(const e of entities.values()){
-    if(e.type === 'PRODUCT_DEFINITION'){
-      const formRef = refs(e.args).find(r=>formations.has(r));
-      let f = formRef ? formations.get(formRef) : null;
-      // Critical fallback for SolidWorks/STEP exports where PRODUCT_DEFINITION_FORMATION mapping is hard to resolve.
-      // In the user's sample file, PRODUCT #18 -> FORMATION #19 -> PRODUCT_DEFINITION #20.
-      // The fallback maps PRODUCT_DEFINITION #20 back to nearest previous PRODUCT #18.
-      let prod = f?.productId ? products.get(f.productId) : null;
-      let source = prod ? 'formation' : 'none';
-      if(!prod || isGeneric(prod.name)){
-        const near=nearestProductBefore(e.id, products, 5);
-        if(near && !isGeneric(near.name)){ prod=near; source='nearest PRODUCT before PD'; }
-      }
-      const pdParamName = chooseName(e.params[0], e.params[1]);
-      const name = chooseName(prod?.name, pdParamName) || `PD_${e.id.slice(1)}`;
-      pdefs.set(e.id,{id:e.id, formationId:formRef, productId:prod?.id || '', name, productName:prod?.name || '', source});
-    }
-  }
-
-  for(const e of entities.values()){
-    if(e.type.includes('SHAPE_REPRESENTATION')){
-      reps.set(e.id,{id:e.id,name:chooseName(e.params[0])});
-    }
-    if(/BREP|SOLID|SHELL|SURFACE_MODEL/.test(e.type)){
-      const nm=chooseName(e.params[0]); if(nm && !isGeneric(nm)) brepNames.push(nm);
-    }
-  }
-  for(const e of entities.values()){
-    if(e.type === 'PRODUCT_DEFINITION_SHAPE'){
-      const r=refs(e.args).find(x=>pdefs.has(x)) || refs(e.args).at(-1);
-      pdsTargets.set(e.id,r);
-    }
-  }
-  for(const e of entities.values()){
-    if(e.type === 'SHAPE_DEFINITION_REPRESENTATION'){
-      const r=refs(e.args); const pds=r.find(x=>pdsTargets.has(x)); const rep=r.find(x=>reps.has(x));
-      if(pds && rep){
-        const target=pdsTargets.get(pds); const nm=reps.get(rep).name;
-        if(nm && !isGeneric(nm)){
-          if(!pdRepNames.has(target)) pdRepNames.set(target,[]);
-          pdRepNames.get(target).push(nm);
-        }
-      }
-    }
-  }
-
-  const links=[];
-  for(const e of entities.values()){
-    if(e.type === 'NEXT_ASSEMBLY_USAGE_OCCURRENCE'){
-      const r=refs(e.args).filter(x=>pdefs.has(x));
-      if(r.length>=2){
-        // Args are typically (..., parent PRODUCT_DEFINITION, child PRODUCT_DEFINITION, ...)
-        const occRaw=chooseName(e.params[2], e.params[1], e.params[0]);
-        links.push({id:e.id,parent:r[0],child:r[1],occName:occRaw});
-      }
-    }
-  }
-
-  const parentSet = new Set(links.map(l=>l.parent));
-  let leafLinks = links.filter(l=>!parentSet.has(l.child));
-  let excludedAssembly = new Set(links.filter(l=>parentSet.has(l.child)).map(l=>l.child)).size;
-  let source = 'NAUO child PRODUCT_DEFINITION leaf';
-
-  let rawRows = leafLinks.map((l,idx)=>{
-    const pd=pdefs.get(l.child);
-    const rep=(pdRepNames.get(l.child)||[]).find(x=>!isGeneric(x)) || '';
-    // IMPORTANT: occurrenceName is often the generic phrase "Next assembly relationship".
-    // Never let that override PRODUCT/PD names.
-    let name=chooseName(pd?.name, rep, l.occName);
-    if(isGeneric(name)) name = `PART_${idx+1}_${l.child.replace('#','')}`;
-    return {name, child:l.child, parent:l.parent, link:l.id, occName:l.occName, pdName:pd?.name||'', productId:pd?.productId||'', productName:pd?.productName||'', pdSource:pd?.source||'', repName:rep, path:`${l.parent} > ${l.child} (${l.id})`};
+function defaultRates(){return {materials:{AL6061:{market:6200,markupMode:'percent',markup:15,density:2.7},SUS304:{market:4800,markupMode:'percent',markup:18,density:7.93},SS400:{market:1300,markupMode:'amount',markup:350,density:7.85},SPCC:{market:1200,markupMode:'amount',markup:300,density:7.85},POM:{market:7200,markupMode:'percent',markup:20,density:1.41},ABS:{market:3900,markupMode:'percent',markup:20,density:1.04},PLA:{market:23000,markupMode:'percent',markup:25,density:1.24}},margins:{'분류 필요':0,'구매품':10,'CNC/MCT':22,'선반':20,'판금/절곡':18,'3D프린팅':28,'사출':18,'프로파일/압출':15,'용접':22},process:{tapUnit:{default:1800},bendUnitByThickness:[{max:1,price:1200},{max:2,price:2200},{max:3.2,price:3800},{max:6,price:6500},{max:999,price:10000}],sheetSetup:25000,cncBase:{small:30000,medium:70000,large:150000},latheBase:35000,profileCut:1000,profileTap:1200,purchaseMinimum:100,weldingBase:50000}}}
+function initInputs(){
+  const marginBox = $('marginInputs');
+  marginBox.innerHTML = '';
+  PROCESS_LIST.forEach(p=>{
+    const label = document.createElement('label'); label.textContent = p;
+    const inp = document.createElement('input'); inp.type='number'; inp.value = state.rates.margins[p] ?? 0; inp.dataset.process=p;
+    inp.addEventListener('input',()=>{state.rates.margins[p]=Number(inp.value)||0; renderParts();});
+    marginBox.append(label, inp);
   });
-
-  // Fallback 1: If links exist but mapped names are still generic, rebuild by nearest PRODUCT before child PD.
-  const genericCount = rawRows.filter(r=>isGeneric(r.name) || /^PART_/.test(r.name)).length;
-  if(rawRows.length && genericCount/rawRows.length > 0.5){
-    rawRows = leafLinks.map((l,idx)=>{
-      const near=nearestProductBefore(l.child, products, 5);
-      const pd=pdefs.get(l.child);
-      const rep=(pdRepNames.get(l.child)||[]).find(x=>!isGeneric(x)) || '';
-      const name=chooseName(near?.name, pd?.name, rep) || `PART_${idx+1}_${l.child.replace('#','')}`;
-      return {name, child:l.child, parent:l.parent, link:l.id, occName:l.occName, pdName:pd?.name||'', productId:near?.id || pd?.productId || '', productName:near?.name || pd?.productName || '', pdSource:'leaf child nearest PRODUCT fallback', repName:rep, path:`${l.parent} > ${l.child} (${l.id})`};
-    });
-    source += ' + nearest PRODUCT name fallback';
-  }
-
-  // Fallback 2: no usable NAUO -> show non-assembly product definitions.
-  if(rawRows.length === 0 && pdefs.size){
-    const candidate=[];
-    for(const [pdId,pd] of pdefs.entries()){
-      if(parentSet.has(pdId)) continue;
-      const name=chooseName(pd.name, (pdRepNames.get(pdId)||[])[0]) || `PART_${candidate.length+1}_${pdId.replace('#','')}`;
-      candidate.push({name, child:pdId, parent:'', link:'fallback', occName:'', pdName:pd.name, productId:pd.productId, productName:pd.productName, pdSource:pd.source, repName:'', path:`fallback ${pdId}`});
-    }
-    rawRows=candidate; source='fallback: PRODUCT_DEFINITION without children';
-  }
-
-  // Fallback 3: named breps/solids.
-  if(rawRows.length===0 && brepNames.length){
-    rawRows = brepNames.map((nm,i)=>({name:nm,child:`BREP_${i+1}`,parent:'',link:'brep',occName:nm,pdName:'',productId:'',productName:nm,pdSource:'brep',repName:nm,path:`brep ${i+1}`}));
-    source='fallback: named BREP/SOLID entities'; excludedAssembly=0;
-  }
-
-  // Group repeated occurrences by actual PRODUCT/PD name. Do not group generic relationship names.
-  const groups = new Map();
-  for(const r of rawRows){
-    const keyName = isGeneric(r.name) ? `${r.child}` : normalizeKey(r.name);
-    const k = keyName;
-    if(!groups.has(k)) groups.set(k,{...r, qty:0, occurrences:[], children:new Set()});
-    const g=groups.get(k); g.qty++; g.occurrences.push(r.link); g.children.add(r.child);
-  }
-  const grouped = [...groups.values()].map(g=>({...g, children:[...g.children]})).sort((a,b)=>a.name.localeCompare(b.name,'ko'));
-  const partRows = grouped.map((r,i)=>makeQuoteRow(r,i));
-
-  return {
-    entities:entities.size, productCount:products.size, pdCount:pdefs.size, formationCount:formations.size, linkCount:links.length,
-    leafLinkCount:leafLinks.length, excludedAssembly, source, rows:partRows,
-    sampleLinks:links.slice(0,20), sampleProducts:[...products.values()].slice(0,35), samplePdefs:[...pdefs.values()].slice(0,35), sampleRows:rawRows.slice(0,40)
-  };
+  const matBox = $('materialInputs'); matBox.innerHTML='';
+  Object.entries(state.rates.materials).forEach(([k,v])=>{
+    const label = document.createElement('label'); label.textContent = k;
+    const inp = document.createElement('input'); inp.type='number'; inp.value = v.markup; inp.title='할증값: % 또는 원/kg'; inp.dataset.material=k;
+    inp.addEventListener('input',()=>{v.markup=Number(inp.value)||0; renderParts();});
+    matBox.append(label, inp);
+  });
+  $('processRates').innerHTML = `탭 기본 ${fmt(state.rates.process.tapUnit.default).replace('원','')} / 절곡 두께별 / 판금 셋업 ${fmt(state.rates.process.sheetSetup)} / CNC 기본 ${fmt(state.rates.process.cncBase.small)}~${fmt(state.rates.process.cncBase.large)}`;
 }
-
-function makeQuoteRow(r,i){
-  const cls = classifyByName(r.name);
-  const material = defaultMaterial(cls.process, r.name);
-  const row={
-    id:'p'+i, name:r.name, qty:r.qty||1, process:cls.process, material, thickness:cls.thickness||0,
-    taps:cls.taps||0, bends:cls.bends||0, buyUnit:cls.buyUnit||RATES.purchaseDefault, margin:MARGINS[cls.process] ?? 20,
-    reason:cls.reason, confidence:cls.confidence, meta:r
-  };
-  row.quote = calcQuote(row);
-  return row;
+function initUpload(){
+  const dz = $('dropZone'), fi = $('fileInput');
+  dz.addEventListener('click',()=>fi.click());
+  fi.addEventListener('change',()=>{ if(fi.files?.[0]) handleFile(fi.files[0]); });
+  ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault(); dz.classList.add('drag');}));
+  ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault(); dz.classList.remove('drag');}));
+  dz.addEventListener('drop',e=>{const f=e.dataTransfer.files?.[0]; if(f) handleFile(f);});
 }
-function classifyByName(name){
-  const n=name.toUpperCase();
-  const reason=[];
-  const has=(re)=>re.test(n);
-  const qtyMatch = n.match(/(?:X|QTY|EA)[-_ ]?(\d{1,3})\b/);
-  const tMatch = n.match(/(?:^|[_ -])(?:T|THK)(\d+(?:\.\d+)?)/) || n.match(/(\d+(?:\.\d+)?)T\b/);
-  const thickness = tMatch ? Number(tMatch[1]) : 0;
-  if(has(/BOLT|NUT|WASHER|BEARING|MOTOR|SENSOR|CYLINDER|SCREW|SPRING|LINEAR|LM\s?GUIDE|PIPE|TUBE|파이프|튜브|각관|배관|SQUARE[_ -]?TUBE|ROUND[_ -]?PIPE|HOSE|FITTING|VALVE|RIVET|REVET|NIPPLE|PIE/)){
-    reason.push('표준품/구매재 키워드 우선'); return {process:'구매품', reason:reason.join(', '), confidence:'높음', buyUnit:guessBuyPrice(n)};
-  }
-  if(has(/PROFILE|AL[_ -]?FRAME|ALFRAME|프로파일|압출|\b20[24]0\b|\b3030\b|\b4040\b|\b4080\b|\b4545\b|\b8080\b/)){
-    reason.push('프로파일/압출 규격 키워드'); return {process:'프로파일/압출', reason:reason.join(', '), confidence:'높음'};
-  }
-  if(has(/SHAFT|PIN|BUSH|BUSHING|ROLLER|SPINDLE|COLLAR|축|샤프트|핀|부싱|롤러/)){
-    reason.push('원통/축류 키워드'); return {process:'선반', reason:reason.join(', '), confidence:'높음'};
-  }
-  const bendHint=has(/BEND|BENT|FOLD|FOLDED|FLANGE|절곡|접힘|L[_ -]?BRACKET|U[_ -]?BRACKET|ㄱ|ㄷ/);
-  const sheetHint=has(/SHEET|HOOD|COVER|PANEL|COWL|BRACKET|BRKT|PLATE|판금|커버|패널|브라켓/);
-  if(bendHint && (thickness>0 && thickness<=6 || sheetHint)){
-    reason.push('같은 두께 판재 + 절곡/플랜지 힌트'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'보통~높음', thickness:thickness||2, bends:guessBends(n)};
-  }
-  if(sheetHint && thickness>0 && thickness<=6){
-    reason.push('얇은 판재 힌트, 절곡은 미확정'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'보통', thickness, bends:0};
-  }
-  if(sheetHint){
-    reason.push('판재/커버류 이름 힌트, 두께·절곡은 공장이 확인'); return {process:'판금/절곡', reason:reason.join(', '), confidence:'낮음~보통', thickness:1.5, bends:0};
-  }
-  if(has(/HOUSING|CASE|CAP|COVER/) && has(/ABS|PP|PC|PLASTIC|RESIN|수지|플라스틱/)){
-    reason.push('플라스틱 케이스/하우징 후보'); return {process:'사출', reason:reason.join(', '), confidence:'보통'};
-  }
-  if(has(/PRINT|3DP|STL|PROTO|시제품/)){
-    reason.push('3D프린팅/시제품 키워드'); return {process:'3D프린팅', reason:reason.join(', '), confidence:'보통'};
-  }
-  if(has(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|CLAMP|GUIDE|PLATE|브라켓|베이스|지그|블록/)){
-    reason.push('구매품/프로파일/선반/판금 제외 후 절삭 가공품 키워드'); return {process:'CNC/MCT', reason:reason.join(', '), confidence:'보통', thickness:thickness||8, taps:guessTaps(n)};
-  }
-  reason.push('명확한 공법 힌트 없음'); return {process:'분류 필요', reason:reason.join(', '), confidence:'낮음', thickness:thickness||0};
+function bindButtons(){
+  $('btnRecalc').addEventListener('click',()=>renderParts());
+  $('btnCsv').addEventListener('click',exportCsv);
+  $('btnApplySheet').addEventListener('click',()=>{ if(state.selectedIndex>=0){state.parts[state.selectedIndex].material='SUS304'; renderParts(); selectPart(state.selectedIndex);} });
+  $('btnShowAll').addEventListener('click',showAllMeshes);
+  $('btnFit').addEventListener('click',fitCamera);
 }
-function guessBuyPrice(n){ if(/BEARING|LM|MOTOR|SENSOR|CYLINDER/.test(n)) return 25000; if(/PIPE|TUBE|VALVE|FITTING/.test(n)) return 12000; if(/BOLT|NUT|WASHER|SCREW/.test(n)) return 250; return 5000; }
-function guessBends(n){ if(/U[_ -]?BRACKET|ㄷ/.test(n)) return 2; if(/L[_ -]?BRACKET|ㄱ/.test(n)) return 1; if(/BOX|COVER|CASE/.test(n)) return 4; if(/FLANGE/.test(n)) return 1; return 1; }
-function guessTaps(n){ const m=n.match(/M(\d{1,2})/); if(m) return 2; if(/BASE|JIG|FIXTURE|MOUNT/.test(n)) return 4; return 0; }
-function defaultMaterial(process,name){ const n=name.toUpperCase(); if(/SUS|STS|304/.test(n)) return 'SUS304'; if(/SS400|STEEL|철/.test(n)) return 'SS400'; if(/POM/.test(n)) return 'POM'; if(/ABS/.test(n)) return 'ABS'; if(process==='사출') return 'ABS'; if(process==='3D프린팅') return 'ABS'; return 'AL6061'; }
-function calcQuote(r){
-  const qty=Math.max(0,Number(r.qty)||0), margin=(Number(r.margin)||0)/100;
-  const mat=MATERIALS[r.material]||MATERIALS.AL6061;
-  let cost=0;
-  const materialCost = Math.max(0, (Number(r.thickness)||1) * qty * mat.price * mat.uplift * 0.18);
-  if(r.process==='제외') cost=0;
-  else if(r.process==='구매품') cost=(Number(r.buyUnit)||0)*qty;
-  else if(r.process==='프로파일/압출') cost=qty*(RATES.profileBase + (Number(r.taps)||0)*RATES.tap + RATES.cut) + materialCost*0.5;
-  else if(r.process==='선반') cost=qty*(RATES.latheBase + (Number(r.taps)||0)*RATES.tap) + materialCost;
-  else if(r.process==='판금/절곡') cost=qty*(RATES.sheetBase + (Number(r.taps)||0)*1500 + (Number(r.bends)||0)*RATES.bend) + materialCost*0.7;
-  else if(r.process==='CNC/MCT') cost=qty*(RATES.cncBase + (Number(r.taps)||0)*RATES.tap) + materialCost;
-  else if(r.process==='3D프린팅') cost=qty*RATES.printBase + materialCost*0.8;
-  else if(r.process==='사출') cost=qty*900 + 0; // 금형비는 기본 미포함. 별도 입력 전에는 과대 견적 방지.
-  else if(r.process==='용접') cost=qty*RATES.weldBase + materialCost;
-  else cost=0;
-  return Math.round(cost*(1+margin));
-}
-
-function render(){
-  const tbody=$('#partsBody');
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="11" class="empty">아직 분석된 파트가 없습니다.</td></tr>'; updateStats(); return;}
-  tbody.innerHTML = rows.map(r=>`<tr data-id="${r.id}" class="${r.id===selectedId?'selected':''}">
-    <td class="nameCell"><b>${escapeHtml(r.name)}</b><span>${escapeHtml(r.meta.child||'')}</span></td>
-    <td><input data-k="qty" value="${r.qty}" type="number" min="0"></td>
-    <td><b>${escapeHtml(r.process)}</b><span class="reason">${escapeHtml(r.confidence)} · ${escapeHtml(r.reason)}</span></td>
-    <td><select data-k="process">${PROCESSES.map(p=>`<option ${p===r.process?'selected':''}>${p}</option>`).join('')}</select></td>
-    <td><select data-k="material">${Object.keys(MATERIALS).map(m=>`<option ${m===r.material?'selected':''}>${m}</option>`).join('')}</select></td>
-    <td><input data-k="thickness" value="${r.thickness}" type="number" min="0" step="0.1"></td>
-    <td><input data-k="taps" value="${r.taps}" type="number" min="0"></td>
-    <td><input data-k="bends" value="${r.bends}" type="number" min="0"></td>
-    <td><input data-k="buyUnit" value="${r.buyUnit}" type="number" min="0"></td>
-    <td><input data-k="margin" value="${r.margin}" type="number" min="0"></td>
-    <td class="quote">${fmt(r.quote)}</td>
-  </tr>`).join('');
-  updateStats(); renderPreview();
-}
-function updateStats(){
-  $('#leafCount').textContent=rows.length;
-  $('#totalQuote').textContent=fmt(rows.reduce((s,r)=>s+(r.quote||0),0));
-}
-function renderPreview(){
-  const r=rows.find(x=>x.id===selectedId) || rows[0];
-  if(!r){ $('#partPreview').className='preview emptyPreview'; $('#partPreview').textContent='파트를 선택하세요.'; $('#partDetail').textContent=''; return; }
-  selectedId=r.id;
-  let cls='shapeIcon'; if(r.process==='판금/절곡') cls+=' sheet'; if(r.process==='구매품' && /PIPE|TUBE|파이프|튜브|각관/i.test(r.name)) cls+=' pipe'; if(r.process==='프로파일/압출') cls+=' profile';
-  $('#partPreview').className='preview';
-  $('#partPreview').innerHTML=`<div><b>${escapeHtml(r.name)}</b><div style="height:12px"></div><div class="${cls}"></div></div>`;
-  $('#partDetail').innerHTML=`
-    <span class="badge">${escapeHtml(r.process)}</span><span class="badge">${escapeHtml(r.material)}</span><span class="badge">수량 ${r.qty}</span>
-    <p><b>견적가:</b> ${fmt(r.quote)}</p>
-    <p><b>추천 근거:</b> ${escapeHtml(r.reason)}</p>
-    <p><b>STEP 연결:</b> ${escapeHtml(r.meta.path || '')}</p>
-    <p class="muted">어셈블리/서브어셈블리 컨테이너는 제외하고, 말단 후보만 표에 표시합니다. 명칭이 부정확하면 공법을 직접 수정하세요.</p>`;
-}
-function renderRates(){
-  $('#marginGrid').innerHTML=Object.keys(MARGINS).filter(k=>k!=='제외').map(k=>`<div class="gridRow"><label>${k}</label><input value="${MARGINS[k]}" data-margin="${k}" type="number"></div>`).join('');
-  $('#materialGrid').innerHTML=Object.entries(MATERIALS).map(([k,v])=>`<div class="gridRow"><label>${k} <span class="muted">${v.price.toLocaleString()}원/kg + ${Math.round((v.uplift-1)*100)}%</span></label><input value="${Math.round(v.price*v.uplift)}" disabled></div>`).join('');
-}
-function setMessage(txt,type='info'){ const el=$('#message'); el.textContent=txt; el.className='message '+type; }
-function setDiag(a){
-  $('#diagText').textContent = [
-    `entity: ${a.entities}`,
-    `PRODUCT: ${a.productCount}`,
-    `PRODUCT_DEFINITION: ${a.pdCount}`,
-    `NEXT_ASSEMBLY_USAGE_OCCURRENCE: ${a.linkCount}`,
-    `leaf link: ${a.leafLinkCount}`,
-    `source: ${a.source}`,
-    '',
-    '[표시된 row 샘플]', JSON.stringify(a.sampleRows, null, 2),
-    '',
-    '[assembly link 샘플]', JSON.stringify(a.sampleLinks, null, 2),
-    '',
-    '[PRODUCT 샘플]', JSON.stringify(a.sampleProducts, null, 2),
-    '',
-    '[PRODUCT_DEFINITION 샘플]', JSON.stringify(a.samplePdefs, null, 2)
-  ].join('\n');
-}
-function escapeHtml(s){return String(s??'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
 
 async function handleFile(file){
-  if(!file) return;
-  $('#status').textContent='읽는 중'; setMessage(`${file.name} 읽는 중...`,'info');
-  const text=await file.text();
+  setStatus('info', `읽는 중: ${file.name}`);
+  clearScene();
+  state.parts = []; state.selectedIndex=-1; state.occtResult=null; state.meshByPart.clear(); state.allMeshes=[];
+  updateStats(); renderParts();
+  const buffer = await file.arrayBuffer();
+  const text = await file.text();
+  const textParse = StepTextParser.parse(text, file.name);
+  state.debug.textParse = textParse.debug;
+  let occtOk = false;
   try{
-    const result=analyzeStep(text);
-    rows=result.rows; originalRows=JSON.parse(JSON.stringify(rows)); selectedId=rows[0]?.id || null;
-    $('#asmCount').textContent=result.excludedAssembly;
-    $('#status').textContent=rows.length?'완료':'실패';
-    if(rows.length){ setMessage(`읽기 완료: entity ${result.entities.toLocaleString()}개, PRODUCT ${result.productCount}개, assembly link ${result.linkCount}개. 말단 파트 ${rows.length}개를 표시했습니다.`, 'good'); }
-    else { setMessage('말단 파트를 찾지 못했습니다. 아래 파싱 진단을 확인하세요.', 'bad'); }
-    setDiag(result); render();
-  }catch(err){ console.error(err); $('#status').textContent='오류'; setMessage('파싱 오류: '+err.message,'bad'); $('#diagText').textContent=err.stack; }
+    occtOk = await tryOcctParse(new Uint8Array(buffer), file.name, textParse);
+  }catch(e){
+    console.warn(e);
+    state.debug.occtError = String(e?.message || e);
+  }
+  if(!occtOk){
+    state.parts = textParse.parts.map(p => enrichPart(p, {source:'STEP text'}));
+    $('statMode').textContent = '텍스트';
+    setStatus(state.parts.length?'ok':'err', state.parts.length ? `텍스트 파서 완료: 말단 파트 ${state.parts.length}종 표시. 실제 3D mesh는 OCCT가 실패하여 표시하지 않습니다.` : '말단 파트를 찾지 못했습니다. 파싱 진단을 확인하세요.');
+  }
+  renderParts();
+  updateStats(textParse);
+  renderDebug(file.name, textParse);
+  if(state.parts.length) selectPart(0);
 }
 
-$('#fileInput').addEventListener('change',e=>handleFile(e.target.files[0]));
-$('#dropZone').addEventListener('dragover',e=>{e.preventDefault();});
-$('#dropZone').addEventListener('drop',e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);});
-$('#partsBody').addEventListener('click',e=>{ const tr=e.target.closest('tr[data-id]'); if(!tr) return; selectedId=tr.dataset.id; render(); });
-$('#partsBody').addEventListener('input',e=>{
-  const tr=e.target.closest('tr[data-id]'); if(!tr) return;
-  const r=rows.find(x=>x.id===tr.dataset.id); if(!r) return;
-  const k=e.target.dataset.k; let v=e.target.value;
-  if(['qty','thickness','taps','bends','buyUnit','margin'].includes(k)) v=Number(v)||0;
-  r[k]=v; if(k==='process' && MARGINS[v]!=null) r.margin=MARGINS[v]; r.quote=calcQuote(r); render();
-});
-$('#resetBtn').addEventListener('click',()=>{ rows=JSON.parse(JSON.stringify(originalRows)); selectedId=rows[0]?.id||null; render(); });
-$('#csvBtn').addEventListener('click',()=>{
-  const head=['파트명','수량','공법','재질','두께','탭','절곡','구매단가','마진','견적가'];
-  const lines=[head.join(',')].concat(rows.map(r=>[r.name,r.qty,r.process,r.material,r.thickness,r.taps,r.bends,r.buyUnit,r.margin,r.quote].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')));
-  const blob=new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote_parts.csv'; a.click(); URL.revokeObjectURL(a.href);
-});
-renderRates(); render();
+async function tryOcctParse(fileBuffer, fileName, textParse){
+  if(typeof window.occtimportjs !== 'function'){
+    state.debug.occtError = 'occtimportjs 로더가 없습니다. CDN 차단 또는 네트워크 문제.';
+    return false;
+  }
+  setStatus('info', 'OCCT WASM으로 실제 STEP mesh 파싱 중입니다. 큰 파일은 시간이 걸립니다.');
+  const occt = await window.occtimportjs();
+  const result = occt.ReadStepFile(fileBuffer, {
+    linearUnit:'millimeter',
+    linearDeflectionType:'bounding_box_ratio',
+    linearDeflection:0.001,
+    angularDeflection:0.5
+  });
+  state.debug.occtRaw = summarizeOcct(result);
+  if(!result || result.success === false || !Array.isArray(result.meshes) || result.meshes.length===0){
+    state.debug.occtError = 'OCCT 결과에 mesh가 없습니다.';
+    return false;
+  }
+  state.occtResult = result;
+  const leaves = collectOcctLeafNodes(result.root);
+  const usable = leaves.filter(l => l.meshes.length>0);
+  const grouped = groupOcctParts(usable, textParse.parts);
+  if(grouped.length===0){
+    state.debug.occtError = 'OCCT mesh는 있으나 leaf node를 만들지 못했습니다.';
+    return false;
+  }
+  state.parts = grouped.map(p => enrichPart(p, {source:'OCCT mesh'}));
+  buildThreeMeshes(result);
+  mapMeshesToParts(state.parts, grouped);
+  showAllMeshes();
+  $('statMode').textContent = 'OCCT 3D';
+  setStatus('ok', `OCCT 실제 mesh 파싱 완료: mesh ${result.meshes.length}개, 말단 파트 ${state.parts.length}종 표시.`);
+  return true;
+}
+
+function summarizeOcct(result){
+  if(!result) return null;
+  return {success:result.success, meshCount:result.meshes?.length||0, rootName:result.root?.name, rootChildren:result.root?.children?.length||0, leafSample:collectOcctLeafNodes(result.root).slice(0,20).map(x=>({name:x.name,path:x.path.join(' > '),meshes:x.meshes}))};
+}
+function collectOcctLeafNodes(root){
+  const out=[];
+  function walk(node,path=[]){
+    if(!node) return;
+    const name = cleanName(node.name || 'UNNAMED');
+    const nextPath = [...path, name];
+    const children = Array.isArray(node.children) ? node.children : [];
+    const meshes = Array.isArray(node.meshes) ? node.meshes : [];
+    if(children.length===0 && meshes.length>0){ out.push({name, path:nextPath, meshes}); return; }
+    if(meshes.length>0 && !isAssemblyName(name)){ out.push({name,path:nextPath,meshes}); }
+    children.forEach(c=>walk(c,nextPath));
+  }
+  walk(root,[]);
+  return out;
+}
+function groupOcctParts(leaves, textParts){
+  const map = new Map();
+  for(const leaf of leaves){
+    let name = bestNameFromPath(leaf.path);
+    if(isGenericName(name)) name = matchTextNameByOrder(map.size, textParts) || name;
+    const key = normalize(name);
+    if(!map.has(key)) map.set(key,{name,qty:0,meshIndices:[],paths:[],source:'OCCT leaf mesh'});
+    const g = map.get(key); g.qty += 1; g.meshIndices.push(...leaf.meshes); g.paths.push(leaf.path.join(' > '));
+  }
+  return [...map.values()].filter(p=>!isAssemblyName(p.name));
+}
+function bestNameFromPath(path){
+  const candidates = [...path].reverse().map(cleanName).filter(n=>n && !isGenericName(n) && !/NEXT ASSEMBLY RELATIONSHIP/i.test(n));
+  return candidates[0] || cleanName(path[path.length-1]);
+}
+function matchTextNameByOrder(i, textParts){ return textParts?.[i]?.name; }
+function isAssemblyName(name){ return /(_ASM$|ASSY|ASSEMBLY)/i.test(name||''); }
+
+function buildThreeMeshes(result){
+  clearScene();
+  state.allMeshes = [];
+  result.meshes.forEach((m, idx)=>{
+    const geom = meshToGeometry(m);
+    if(!geom) return;
+    const color = Array.isArray(m.color) ? new THREE.Color(m.color[0],m.color[1],m.color[2]) : new THREE.Color(0x7d8798);
+    const mat = new THREE.MeshStandardMaterial({color, roughness:.72, metalness:.08, side:THREE.DoubleSide});
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = cleanName(m.name || `mesh_${idx}`);
+    mesh.userData.meshIndex = idx;
+    state.allMeshes[idx] = mesh;
+  });
+}
+function meshToGeometry(m){
+  const posRaw = m?.attributes?.position?.array;
+  if(!posRaw || posRaw.length===0) return null;
+  const pos = flattenNumbers(posRaw);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  const normRaw = m?.attributes?.normal?.array;
+  if(normRaw?.length){ geom.setAttribute('normal', new THREE.Float32BufferAttribute(flattenNumbers(normRaw),3)); }
+  const idxRaw = m?.index?.array;
+  if(idxRaw?.length){ geom.setIndex(flattenNumbers(idxRaw)); }
+  if(!normRaw?.length) geom.computeVertexNormals();
+  geom.computeBoundingBox(); geom.computeBoundingSphere();
+  return geom;
+}
+function flattenNumbers(arr){ return Array.isArray(arr[0]) ? arr.flat(Infinity).map(Number) : Array.from(arr).map(Number); }
+function mapMeshesToParts(parts, grouped){
+  state.meshByPart.clear();
+  parts.forEach((p,i)=>{ state.meshByPart.set(i, [...new Set(grouped[i]?.meshIndices || [])]); });
+}
+
+function initViewer(){
+  const el = $('viewer');
+  el.innerHTML='';
+  state.scene = new THREE.Scene();
+  state.scene.background = new THREE.Color(0x0f172a);
+  state.camera = new THREE.PerspectiveCamera(45, el.clientWidth/el.clientHeight, 0.1, 100000);
+  state.camera.position.set(250,200,250);
+  state.renderer = new THREE.WebGLRenderer({antialias:true});
+  state.renderer.setSize(el.clientWidth, el.clientHeight);
+  state.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  el.appendChild(state.renderer.domElement);
+  state.controls = new OrbitControls(state.camera, state.renderer.domElement);
+  state.controls.enableDamping = true;
+  state.modelGroup = new THREE.Group(); state.scene.add(state.modelGroup);
+  const hemi = new THREE.HemisphereLight(0xffffff,0x29344a,2.2); state.scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff,2.0); dir.position.set(200,300,200); state.scene.add(dir);
+  const grid = new THREE.GridHelper(500,20,0x334155,0x1f2937); state.scene.add(grid);
+  window.addEventListener('resize',()=>{ const w=el.clientWidth,h=el.clientHeight; state.camera.aspect=w/h; state.camera.updateProjectionMatrix(); state.renderer.setSize(w,h); });
+  (function animate(){ requestAnimationFrame(animate); state.controls.update(); state.renderer.render(state.scene,state.camera); })();
+  state.viewerReady=true;
+}
+function clearScene(){ if(state.modelGroup){ while(state.modelGroup.children.length) state.modelGroup.remove(state.modelGroup.children[0]); } }
+function showAllMeshes(){
+  clearScene();
+  state.allMeshes.forEach(m=>{ if(m){ const c=m.clone(); c.geometry=m.geometry; state.modelGroup.add(c);} });
+  fitCamera();
+}
+function showPartMesh(index){
+  clearScene();
+  const ids = state.meshByPart.get(index) || [];
+  if(!ids.length){ showPreviewOnly(index); return; }
+  ids.forEach(id=>{ const m=state.allMeshes[id]; if(m){ const c=m.clone(); c.geometry=m.geometry; c.material=m.material.clone(); c.material.color.set(0x82a7ff); state.modelGroup.add(c); }});
+  fitCamera();
+}
+function showPreviewOnly(index){
+  clearScene();
+  const p = state.parts[index];
+  if(!p) return;
+  const geom = new THREE.BoxGeometry(80, Math.max(4, p.thickness*3 || 12), 50);
+  const mat = new THREE.MeshStandardMaterial({color:0x778293, roughness:.7});
+  const mesh = new THREE.Mesh(geom, mat); state.modelGroup.add(mesh); fitCamera();
+}
+function fitCamera(){
+  if(!state.modelGroup || state.modelGroup.children.length===0) return;
+  const box = new THREE.Box3().setFromObject(state.modelGroup);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x,size.y,size.z,1);
+  const dist = maxDim * 2.3;
+  state.camera.position.set(center.x+dist, center.y+dist*.8, center.z+dist);
+  state.camera.near = Math.max(maxDim/1000,.1); state.camera.far = Math.max(maxDim*20,1000); state.camera.updateProjectionMatrix();
+  state.controls.target.copy(center); state.controls.update();
+}
+
+const StepTextParser = {
+  parse(text,fileName){
+    const entities = parseEntities(text);
+    const products = new Map(), formations = new Map(), pdefs = new Map(), links=[];
+    for(const e of entities.values()){
+      if(e.type==='PRODUCT') products.set(e.id,{id:e.id,name:firstString(e.args)||e.id,args:e.args});
+    }
+    for(const e of entities.values()){
+      if(e.type.startsWith('PRODUCT_DEFINITION_FORMATION')){
+        const prodRef = getRefs(e.raw).find(r=>products.has(r));
+        formations.set(e.id,{id:e.id,product:prodRef});
+      }
+    }
+    for(const e of entities.values()){
+      if(e.type==='PRODUCT_DEFINITION'){
+        const refs = getRefs(e.raw);
+        const formation = refs.find(r=>formations.has(r));
+        const prod = formation ? formations.get(formation).product : refs.find(r=>products.has(r));
+        const pdName = firstString(e.args) || '';
+        pdefs.set(e.id,{id:e.id,name:pdName,formation,product:prod,productName:products.get(prod)?.name || pdName || e.id});
+      }
+    }
+    for(const e of entities.values()){
+      if(e.type==='NEXT_ASSEMBLY_USAGE_OCCURRENCE'){
+        const refs = getRefs(e.raw).filter(r=>pdefs.has(r));
+        if(refs.length>=2){
+          links.push({id:e.id,parent:refs[0],child:refs[1],occurrenceName: secondString(e.args) || firstString(e.args) || ''});
+        }
+      }
+    }
+    const rows = buildLeafRows(pdefs, links);
+    const parts = rows.map(r=>({name:r.name, qty:r.qty, source:'STEP text leaf', pdIds:r.pdIds, paths:r.paths}));
+    const debug = {fileName, entityCount:entities.size, productCount:products.size, productDefinitionCount:pdefs.size, linkCount:links.length, leafCount:rows.length, samples:{products:[...products.values()].slice(0,40), links:links.slice(0,40), rows:rows.slice(0,60)}};
+    return {parts, debug};
+  }
+};
+function parseEntities(text){
+  const map = new Map();
+  const re = /#(\d+)\s*=\s*([A-Z0-9_]+)\s*\(([\s\S]*?)\);/g;
+  let m;
+  while((m=re.exec(text))){
+    const id='#'+m[1], type=m[2].toUpperCase(), argRaw=m[3];
+    map.set(id,{id,type,args:splitArgs(argRaw),raw:argRaw});
+  }
+  return map;
+}
+function splitArgs(s){
+  const out=[]; let cur='', depth=0, inStr=false;
+  for(let i=0;i<s.length;i++){
+    const ch=s[i];
+    if(ch==="'" && s[i-1] !== '\\') inStr = !inStr;
+    if(!inStr){ if(ch==='(') depth++; if(ch===')') depth--; if(ch===',' && depth===0){ out.push(cur.trim()); cur=''; continue; } }
+    cur += ch;
+  }
+  if(cur.trim()) out.push(cur.trim());
+  return out;
+}
+function firstString(args){ const a=args.find(x=>/^'/.test(x.trim())); return a?cleanName(a.slice(1,-1)):''; }
+function secondString(args){ const ss=args.filter(x=>/^'/.test(x.trim())).map(x=>cleanName(x.slice(1,-1))); return ss[1]||''; }
+function getRefs(raw){ return [...raw.matchAll(/#\d+/g)].map(m=>m[0]); }
+function buildLeafRows(pdefs, links){
+  const parentSet = new Set(links.map(l=>l.parent));
+  const childSet = new Set(links.map(l=>l.child));
+  const edgeMap = new Map();
+  for(const l of links){
+    if(!edgeMap.has(l.parent)) edgeMap.set(l.parent, new Map());
+    const m = edgeMap.get(l.parent);
+    m.set(l.child, (m.get(l.child)||0)+1);
+  }
+  let roots = [...parentSet].filter(p=>!childSet.has(p));
+  if(roots.length===0 && parentSet.size) roots = [[...parentSet].sort((a,b)=>(edgeMap.get(b)?.size||0)-(edgeMap.get(a)?.size||0))[0]];
+  const leafCounts = new Map();
+  const paths = new Map();
+  function pdName(pd){ const d=pdefs.get(pd); return cleanName(d?.productName || d?.name || pd); }
+  function walk(pd, mult, path, seen){
+    if(seen.has(pd)) return; seen.add(pd);
+    const edges = edgeMap.get(pd);
+    if(!edges || edges.size===0){
+      const name = pdName(pd);
+      if(isAssemblyName(name)) return;
+      const key = normalize(name);
+      if(!leafCounts.has(key)) leafCounts.set(key,{name,qty:0,pdIds:new Set(),paths:[]});
+      const row = leafCounts.get(key); row.qty += mult; row.pdIds.add(pd); row.paths.push([...path,name].join(' > '));
+      return;
+    }
+    for(const [child,count] of edges){ walk(child, mult*count, [...path,pdName(pd)], new Set(seen)); }
+  }
+  roots.forEach(r=>walk(r,1,[],new Set()));
+  if(leafCounts.size===0){
+    for(const [pd,d] of pdefs){ const name=cleanName(d.productName || d.name); if(!isAssemblyName(name) && !isGenericName(name)){ const key=normalize(name); leafCounts.set(key,{name,qty:1,pdIds:new Set([pd]),paths:[name]}); } }
+  }
+  return [...leafCounts.values()].map(r=>({name:r.name,qty:r.qty,pdIds:[...r.pdIds],paths:r.paths})).sort((a,b)=>a.name.localeCompare(b.name));
+}
+
+function enrichPart(part, meta={}){
+  const rec = classify(part.name);
+  const thickness = inferThickness(part.name, rec.process);
+  const taps = inferTaps(part.name, rec.process);
+  const bends = inferBends(part.name, rec.process, thickness);
+  return {
+    id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+    name: cleanName(part.name), qty: Math.max(1, Number(part.qty)||1),
+    process: rec.process, material: rec.material, thickness,
+    tapCount: taps, bendCount: bends,
+    margin: state.rates.margins[rec.process] ?? 0,
+    reason: rec.reason, confidence: rec.confidence,
+    cost:0, source: meta.source || part.source || '',
+    meshIndices: part.meshIndices || [], paths: part.paths || []
+  };
+}
+function classify(name){
+  const n = normalize(name);
+  if(/BOLT|NUT|SCREW|WASHER|BEARING|SENSOR|MOTOR|CYLINDER|RIVET|REVET|NIPPLE|PIPE|TUBE|HOSE|VALVE|HEX|PIE|파이프|튜브|각관|배관/i.test(n)) return {process:'구매품', material:'SS400', confidence:'높음', reason:'구매품명/표준품 힌트'};
+  if(/PROFILE|AL.?FRAME|프로파일|압출|\b(2020|3030|4040|4080|4545|5050|6060|8080)\b/i.test(n)) return {process:'프로파일/압출', material:'AL6061', confidence:'높음', reason:'프로파일/압출 규격 힌트'};
+  if(/SHAFT|PIN|BUSH|ROLLER|ROD|축|샤프트|부싱/i.test(n)) return {process:'선반', material:'SS400', confidence:'높음', reason:'회전체/축류 이름 힌트'};
+  if(/BEND|BENT|FOLD|FLANGE|L_BRACKET|U_BRACKET|절곡/i.test(n)) return {process:'판금/절곡', material:'SUS304', confidence:'높음', reason:'절곡/플랜지 이름 힌트'};
+  if(/HOOD|COVER|PANEL|BODY|SIDE|SKEL|BOTTLE|SHEET|PLATE/i.test(n)) return {process:'판금/절곡', material:'SUS304', confidence:'보통', reason:'판금 후보. 절곡 횟수는 공장 확인'};
+  if(/BASE|BLOCK|MOUNT|JIG|FIXTURE|HOLDER|BRACKET|ADAPTER|GUIDE|SUPPORT|CLAMP|BY/i.test(n)) return {process:'CNC/MCT', material:'AL6061', confidence:'보통', reason:'절삭 가공품 이름 힌트'};
+  return {process:'분류 필요', material:'AL6061', confidence:'낮음', reason:'명확한 공법 힌트 없음'};
+}
+function inferThickness(name, process){ const n=normalize(name); const m=n.match(/(?:_|-)(\d+(?:\.\d+)?)T\b|\b(\d+(?:\.\d+)?)T\b/); if(m) return Number(m[1]||m[2]); if(process==='판금/절곡') return 1.5; if(process==='CNC/MCT') return 8; return 3; }
+function inferTaps(name, process){ const n=normalize(name); const m=n.match(/M(\d+)/); if(/SCREW|BOLT|NUT|REVET|RIVET/.test(n)) return 0; return process==='CNC/MCT' && /TAP|M\d+|TH/.test(n) ? 1 : 0; }
+function inferBends(name, process, t){ const n=normalize(name); if(process!=='판금/절곡') return 0; if(/U_BRACKET|U-BRACKET|U형/.test(n)) return 2; if(/L_BRACKET|L-BRACKET|ㄱ/.test(n)) return 1; if(/BEND|BENT|FOLD|FLANGE|절곡/.test(n)) return 1; return 0; }
+
+function calculate(part){
+  const qty = Math.max(0, Number(part.qty)||0), margin = Number(part.margin)||0;
+  const mat = state.rates.materials[part.material] || state.rates.materials.AL6061;
+  const unitMat = mat.markupMode==='amount' ? mat.market + mat.markup : mat.market * (1 + mat.markup/100);
+  let materialCost = 0, processCost = 0, note='';
+  const p = part.process;
+  const t = Number(part.thickness)||0;
+  if(p==='분류 필요'){ materialCost=0; processCost=0; note='공법 선택 전'; }
+  else if(p==='구매품'){
+    const base = purchasePrice(part.name); processCost = base * qty; note='구매품 단가×수량';
+  }else if(p==='프로파일/압출'){
+    const len = inferLength(part.name) || 500; materialCost = (len/1000) * 12000 * qty; processCost = (state.rates.process.profileCut + part.tapCount*state.rates.process.profileTap) * qty; note='길이/절단/탭';
+  }else if(p==='선반'){
+    materialCost = unitMat * 0.15 * qty; processCost = state.rates.process.latheBase * qty + part.tapCount * state.rates.process.tapUnit.default; note='선반 기본+탭';
+  }else if(p==='판금/절곡'){
+    const areaM2 = inferArea(part.name) || 0.12; materialCost = areaM2 * (t/1.5) * unitMat * mat.density * qty * 0.2;
+    const bendUnit = bendUnit(t); processCost = (state.rates.process.sheetSetup + bendUnit * part.bendCount + part.tapCount * state.rates.process.tapUnit.default) * qty; note='판재+셋업+절곡+탭';
+  }else if(p==='CNC/MCT'){
+    const size = cncSize(part.name); materialCost = unitMat * (size==='large'?1.2:size==='medium'?0.45:0.12) * qty;
+    processCost = state.rates.process.cncBase[size] * qty + part.tapCount * state.rates.process.tapUnit.default; note='CNC 기본+탭';
+  }else if(p==='3D프린팅'){
+    materialCost = unitMat * 0.05 * qty; processCost = 18000 * qty; note='출력 기본';
+  }else if(p==='사출'){
+    materialCost = unitMat * 0.03 * qty; processCost = 200 * qty; note='금형비 미포함';
+  }else if(p==='용접'){
+    materialCost = unitMat * 0.5 * qty; processCost = state.rates.process.weldingBase * qty; note='용접 기본';
+  }
+  const subtotal = materialCost + processCost;
+  const total = subtotal * (1 + margin/100);
+  return {materialCost, processCost, marginAmount: total-subtotal, total, note};
+}
+function bendUnit(t){ return (state.rates.process.bendUnitByThickness.find(x=>t<=x.max)||state.rates.process.bendUnitByThickness.at(-1)).price; }
+function purchasePrice(name){ const n=normalize(name); if(/NUT/.test(n)) return 80; if(/SCREW|BOLT/.test(n)) return 120; if(/REVET|RIVET/.test(n)) return 70; if(/BEARING/.test(n)) return 2500; if(/NIPPLE|PIPE|TUBE|PIE|VALVE/.test(n)) return 4500; return 1000; }
+function inferLength(name){ const m=normalize(name).match(/L(\d{2,5})/); return m?Number(m[1]):0; }
+function inferArea(name){ return /COVER|HOOD|BODY|PANEL|SIDE|BOTTLE/i.test(name) ? 0.35 : 0.12; }
+function cncSize(name){ const n=normalize(name); if(/BASE|BLOCK|JIG|FIXTURE/.test(n)) return 'large'; if(/MOUNT|HOLDER|BRACKET|SUPPORT|BY/.test(n)) return 'medium'; return 'small'; }
+
+function renderParts(){
+  const body = $('partsBody'); body.innerHTML='';
+  if(!state.parts.length){ body.innerHTML='<tr><td colspan="10" class="empty-cell">파일을 업로드하면 여기에 말단 파트가 표시됩니다.</td></tr>'; updateStats(); return; }
+  const tpl = $('partRowTemplate');
+  state.parts.forEach((part,i)=>{
+    const calc = calculate(part); part.cost = calc.total; part._calc = calc;
+    const tr = tpl.content.firstElementChild.cloneNode(true);
+    if(i===state.selectedIndex) tr.classList.add('active');
+    tr.querySelector('.part-name').innerHTML = `<b>${escapeHtml(part.name)}</b><small>${part.source || ''}</small>`;
+    const qty = tr.querySelector('.qty-input'); qty.value=part.qty; qty.addEventListener('input',()=>{part.qty=Number(qty.value)||0; renderParts(); selectPart(i,false);});
+    tr.querySelector('.recommend').innerHTML = `<span class="pill">${part.confidence}</span><small>${escapeHtml(part.reason)}</small>`;
+    const proc = tr.querySelector('.process-select'); fillSelect(proc, PROCESS_LIST, part.process); proc.addEventListener('change',()=>{part.process=proc.value; part.margin=state.rates.margins[part.process]??part.margin; renderParts(); selectPart(i,false);});
+    const mat = tr.querySelector('.material-select'); fillSelect(mat, MATERIAL_LIST, part.material); mat.addEventListener('change',()=>{part.material=mat.value; renderParts(); selectPart(i,false);});
+    const th = tr.querySelector('.thickness-input'); th.value=part.thickness; th.addEventListener('input',()=>{part.thickness=Number(th.value)||0; renderParts(); selectPart(i,false);});
+    const tap = tr.querySelector('.tap-input'); tap.value=part.tapCount; tap.addEventListener('input',()=>{part.tapCount=Number(tap.value)||0; renderParts(); selectPart(i,false);});
+    const bend = tr.querySelector('.bend-input'); bend.value=part.bendCount; bend.addEventListener('input',()=>{part.bendCount=Number(bend.value)||0; renderParts(); selectPart(i,false);});
+    const margin = tr.querySelector('.margin-input'); margin.value=part.margin; margin.addEventListener('input',()=>{part.margin=Number(margin.value)||0; renderParts(); selectPart(i,false);});
+    tr.querySelector('.cost-cell').textContent = fmt(part.cost);
+    tr.addEventListener('click',(e)=>{ if(['INPUT','SELECT','BUTTON'].includes(e.target.tagName)) return; selectPart(i); });
+    body.appendChild(tr);
+  });
+  updateStats();
+}
+function fillSelect(sel, list, val){ sel.innerHTML=''; list.forEach(x=>{const o=document.createElement('option'); o.value=x; o.textContent=x; if(x===val)o.selected=true; sel.appendChild(o);}); }
+function selectPart(i, showMesh=true){
+  state.selectedIndex=i; const part=state.parts[i]; if(!part) return;
+  if(showMesh) showPartMesh(i);
+  document.querySelectorAll('#partsBody tr').forEach((tr,idx)=>tr.classList.toggle('active',idx===i));
+  const calc = part._calc || calculate(part);
+  $('selectedBox').innerHTML = `<div class="selected-card"><h3>${escapeHtml(part.name)}</h3><div class="preview-box"><div class="preview-shape"></div></div><div><span class="pill">${part.process}</span><span class="pill">${part.material}</span><span class="pill">수량 ${part.qty}</span></div><div class="selected-meta">두께 ${part.thickness}T / 탭 ${part.tapCount} / 절곡 ${part.bendCount}<br>재료 ${fmt(calc.materialCost)} / 공정 ${fmt(calc.processCost)} / 마진 ${fmt(calc.marginAmount)}<br>근거: ${escapeHtml(part.reason)}<br>경로: ${(part.paths||[]).slice(0,2).map(escapeHtml).join('<br>')}</div><div class="selected-price">파트 견적 ${fmt(calc.total)}</div></div>`;
+}
+function updateStats(textParse){
+  $('statParts').textContent = state.parts.length;
+  $('statAsm').textContent = textParse?.debug?.assemblyExcludedCount ?? countAssembliesFromDebug(textParse) ?? 0;
+  $('statEntities').textContent = textParse?.debug?.entityCount ?? state.debug?.textParse?.entityCount ?? 0;
+  $('statTotal').textContent = fmt(state.parts.reduce((a,p)=>a+(p.cost||calculate(p).total),0));
+}
+function countAssembliesFromDebug(tp){ return tp?.debug?.linkCount ? Math.max(0,(tp.debug.productDefinitionCount||0)-state.parts.length) : 0; }
+function renderDebug(fileName, textParse){
+  const dbg = {fileName, textParser:textParse.debug, occt:state.debug.occtRaw || null, occtError:state.debug.occtError || null, parts:state.parts.map(p=>({name:p.name,qty:p.qty,process:p.process,source:p.source,paths:p.paths?.slice(0,3)}))};
+  $('debugPre').textContent = JSON.stringify(dbg,null,2);
+}
+function setStatus(type,msg){ const el=$('statusBox'); el.className='status '+type; el.textContent=msg; }
+function escapeHtml(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function exportCsv(){
+  if(!state.parts.length) return;
+  const rows = [['파트명','수량','공법','재질','두께','탭','절곡','마진','견적가']];
+  state.parts.forEach(p=>rows.push([p.name,p.qty,p.process,p.material,p.thickness,p.tapCount,p.bendCount,p.margin,Math.round(p.cost||calculate(p).total)]));
+  const csv = rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote_parts.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
