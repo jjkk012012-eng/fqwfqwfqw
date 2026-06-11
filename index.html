@@ -1,88 +1,93 @@
 <!doctype html>
 <html lang="ko">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>공장용 STEP 견적 계산기 - Leaf Part Parser</title>
-<link rel="stylesheet" href="styles.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>공장용 STEP 파트 견적 계산기</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-<header class="topbar">
-  <div>
-    <h1>공장용 STEP 견적 계산기</h1>
-    <p>STEP/STP 어셈블리에서 <b>어셈블리 컨테이너는 제외</b>하고, 실제 말단 파트/occurrence 기준으로 분류합니다.</p>
-  </div>
-  <div class="pill">플랫폼 수수료 0원</div>
-</header>
-
-<main class="layout">
-  <section class="maincol">
-    <label class="drop" id="dropZone">
-      <input type="file" id="fileInput" accept=".step,.stp,.STEP,.STP" />
-      <strong>STEP/STP 파일 선택</strong>
-      <span>클릭하거나 파일을 드래그하세요</span>
-      <small>이번 버전은 PRODUCT만 보지 않고, NEXT_ASSEMBLY_USAGE_OCCURRENCE의 parent/child 관계와 occurrence 이름을 같이 사용합니다.</small>
-    </label>
-
-    <div class="stats">
-      <div><b id="statLeaf">0</b><span>견적 대상 파트</span></div>
-      <div><b id="statAsm">0</b><span>제외 어셈블리</span></div>
-      <div><b id="statEntity">0</b><span>STEP 엔티티</span></div>
-      <div><b id="statTotal">0원</b><span>총 견적</span></div>
-      <div><b id="statStatus">대기</b><span>상태</span></div>
+  <header class="topbar">
+    <div>
+      <h1>공장용 STEP 파트 견적 계산기</h1>
+      <p>STEP/STP 어셈블리에서 <b>말단 파트만</b> 분리해 표에 넣고, 공장이 직접 공법·재질·탭·절곡·마진을 수정합니다.</p>
     </div>
+    <span class="pill">플랫폼 수수료 0원</span>
+  </header>
 
-    <div id="message" class="message warn">파일을 올리면 파싱 결과와 실패 원인을 여기 표시합니다.</div>
+  <main class="wrap">
+    <section class="main">
+      <label class="upload" id="dropZone">
+        <input type="file" id="fileInput" accept=".step,.stp,.STEP,.STP" />
+        <strong>STEP/STP 파일 선택</strong>
+        <span>클릭하거나 파일을 드래그하세요</span>
+        <small>외부 CDN 없이 STEP 텍스트 구조를 직접 분석합니다. 실제 3D 형상 계산은 별도 OCCT 서버/wasm 연동 대상입니다.</small>
+      </label>
 
-    <section class="card">
-      <div class="cardHead">
-        <h2>말단 파트 견적표</h2>
-        <div class="actions">
-          <button id="applyAl">선택 재질 AL6061</button>
-          <button id="resetBtn">전체 재계산</button>
-          <button id="csvBtn">CSV 내보내기</button>
+      <div class="stats">
+        <div><b id="leafCount">0</b><span>말단 파트</span></div>
+        <div><b id="asmCount">0</b><span>제외 어셈블리</span></div>
+        <div><b id="totalQuote">0원</b><span>고객 제출가</span></div>
+        <div><b id="status">대기</b><span>분석 상태</span></div>
+      </div>
+
+      <div id="message" class="message info">파일을 올리면 PRODUCT, PRODUCT_DEFINITION, NEXT_ASSEMBLY_USAGE_OCCURRENCE를 해석해 말단 파트를 추출합니다.</div>
+
+      <section class="tableCard">
+        <div class="cardHead">
+          <h2>말단 파트 견적표</h2>
+          <div class="actions">
+            <button id="resetBtn" type="button">초기값 복원</button>
+            <button id="csvBtn" type="button">CSV 내보내기</button>
+          </div>
         </div>
-      </div>
-      <div class="tableWrap">
-        <table id="partsTable">
-          <thead>
-            <tr>
-              <th>파트명 / occurrence</th>
-              <th>수량</th>
-              <th>자동추천 / 근거</th>
-              <th>공법</th>
-              <th>재질</th>
-              <th>두께</th>
-              <th>탭</th>
-              <th>절곡</th>
-              <th>마진%</th>
-              <th>견적가</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+        <div class="tableWrap">
+          <table id="partsTable">
+            <thead>
+              <tr>
+                <th>파트명</th>
+                <th>수량</th>
+                <th>자동추천/근거</th>
+                <th>공법</th>
+                <th>재질</th>
+                <th>두께T</th>
+                <th>탭</th>
+                <th>절곡</th>
+                <th>구매단가</th>
+                <th>마진%</th>
+                <th>견적가</th>
+              </tr>
+            </thead>
+            <tbody id="partsBody">
+              <tr><td colspan="11" class="empty">아직 분석된 파트가 없습니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="diagnostics" id="diagnostics">
+        <h2>파싱 진단</h2>
+        <pre id="diagText">파일 업로드 전입니다.</pre>
+      </section>
     </section>
 
-    <details class="debug" open>
-      <summary>파싱 진단 / 원본 구조 확인</summary>
-      <pre id="debugText">아직 파일 없음</pre>
-    </details>
-  </section>
+    <aside class="side">
+      <section class="panel">
+        <h2>선택 파트 검토</h2>
+        <div id="partPreview" class="preview emptyPreview">파트를 선택하세요.</div>
+        <div id="partDetail" class="detail muted">선택한 파트의 원본 링크와 추천 근거가 표시됩니다.</div>
+      </section>
 
-  <aside class="sidecol">
-    <section class="card sticky">
-      <h2>선택 파트 검토</h2>
-      <div id="partPreview" class="preview empty">파트를 선택하세요.</div>
-    </section>
+      <section class="panel">
+        <h2>우리 공장 단가표</h2>
+        <h3>공법별 기본 마진</h3>
+        <div id="marginGrid" class="grid"></div>
+        <h3>재료 시세 + 할증</h3>
+        <div id="materialGrid" class="grid small"></div>
+      </section>
+    </aside>
+  </main>
 
-    <section class="card sticky2">
-      <h2>우리 공장 단가표</h2>
-      <div class="rateGrid" id="rateInputs"></div>
-    </section>
-  </aside>
-</main>
-
-<script src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

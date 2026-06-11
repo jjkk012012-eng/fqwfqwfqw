@@ -1,13 +1,16 @@
-공장용 STEP 견적 계산기 - leaf parser fixed
+공장용 STEP 파트 견적 계산기 - leaf parser v2
 
-핵심 수정:
-- PRODUCT 이름만 집계하지 않음
-- NEXT_ASSEMBLY_USAGE_OCCURRENCE의 parent/child PRODUCT_DEFINITION 관계를 읽음
-- child가 있는 assembly/subassembly 컨테이너는 견적 제외
-- 말단 leaf occurrence만 견적표에 표시
-- occurrence name을 우선 파트명으로 사용
-- 실패 시 PRODUCT_DEFINITION / BREP fallback 및 진단창 표시
+핵심
+- 외부 CDN 없이 STEP/STP 텍스트를 직접 분석합니다.
+- PRODUCT / PRODUCT_DEFINITION / NEXT_ASSEMBLY_USAGE_OCCURRENCE 관계를 해석합니다.
+- child가 있는 어셈블리/서브어셈블리는 제외하고 leaf part 후보만 표에 표시합니다.
+- PRODUCT 이름이 design으로 뭉개지는 파일을 위해 PRODUCT_DEFINITION fallback, BREP/SOLID name fallback을 넣었습니다.
+- 이 버전은 실제 3D 형상 뷰어가 아닙니다. 먼저 파트 리스트/수량/견적 입력 흐름을 안정화한 버전입니다.
 
-주의:
-- 이 버전은 외부 CDN 없이 STEP 텍스트 구조를 안정적으로 읽기 위한 버전입니다.
-- 실제 3D 형상/절곡 R 판별은 CAD kernel 연동이 필요합니다.
+설치
+- index.html, styles.css, app.js, README.txt, data 폴더를 저장소 root에 넣으세요.
+- GitHub Pages: main / root 설정이면 바로 동작합니다.
+
+주의
+- STEP 텍스트 파서는 CAD export 방식에 따라 파트명이 부족할 수 있습니다.
+- 실제 형상 기반 절곡/R/두께/부피 계산은 OCCT 서버 또는 WASM 연동이 필요합니다.
