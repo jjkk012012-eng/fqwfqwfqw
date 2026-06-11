@@ -1,4 +1,4 @@
-/* 공장용 STEP 견적 계산기 Real Viewer V5 */
+/* 공장용 STEP 견적 계산기 Real Viewer V6 - score based classifier */
 const $ = (id) => document.getElementById(id);
 const state = {
   fileName: '',
@@ -157,13 +157,71 @@ function buildThreeMeshes(meshes){
       const mesh = new THREE.Mesh(geom, mat); mesh.name = m.name || `MESH_${idx+1}`; mesh.userData.index = idx;
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), new THREE.LineBasicMaterial({color:0x0b1220, opacity:.35, transparent:true}));
       const group = new THREE.Group(); group.name = mesh.name; group.add(mesh); group.add(edges); root.add(group);
-      state.meshObjects.push({group, mesh, raw:m, name:mesh.name, norm:norm(mesh.name)});
+      const metrics = computeMeshMetrics(m, geom);
+      state.meshObjects.push({group, mesh, raw:m, name:mesh.name, norm:norm(mesh.name), metrics});
       const n = norm(mesh.name); if(n) state.meshByName.set(n, group);
     } catch(e){ console.warn('mesh build fail', idx, e); }
   });
   fitCamera();
 }
 function colorFromIndex(i){ const colors=[0x92b4ff,0xffc857,0x6ee7b7,0xfca5a5,0xc4b5fd,0x93c5fd,0xfcd34d,0xa7f3d0]; return colors[i%colors.length]; }
+
+
+function computeMeshMetrics(rawMesh, geom){
+  const pos = rawMesh?.attributes?.position?.array || [];
+  const idx = rawMesh?.index?.array || [];
+  const metrics = {
+    dims:[0,0,0], sortedDims:[0,0,0], minDim:0, midDim:0, maxDim:0,
+    bboxVolumeMm3:0, surfaceAreaMm2:0, volumeMm3:0, solidness:0,
+    flatness:0, slenderness:0, cylinderLike:false, flatPlateLike:false,
+    normalClusterCount:0, normalComplexity:0, triangleCount: Math.floor((idx.length||0)/3)
+  };
+  try{
+    let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+    for(let i=0;i<pos.length;i+=3){
+      const x=pos[i], y=pos[i+1], z=pos[i+2];
+      if(!Number.isFinite(x+y+z)) continue;
+      if(x<minX)minX=x; if(y<minY)minY=y; if(z<minZ)minZ=z;
+      if(x>maxX)maxX=x; if(y>maxY)maxY=y; if(z>maxZ)maxZ=z;
+    }
+    const dx=Math.max(0,maxX-minX), dy=Math.max(0,maxY-minY), dz=Math.max(0,maxZ-minZ);
+    const sorted=[dx,dy,dz].sort((a,b)=>a-b);
+    metrics.dims=[dx,dy,dz]; metrics.sortedDims=sorted; metrics.minDim=sorted[0]||0; metrics.midDim=sorted[1]||0; metrics.maxDim=sorted[2]||0;
+    metrics.bboxVolumeMm3=Math.max(0,dx*dy*dz);
+    let area=0, vol=0;
+    const cluster = new Map();
+    const maxTris = Math.floor(idx.length/3);
+    const step = Math.max(1, Math.floor(maxTris/7000));
+    for(let t=0;t<maxTris;t+=step){
+      const ia=idx[t*3]*3, ib=idx[t*3+1]*3, ic=idx[t*3+2]*3;
+      const ax=pos[ia], ay=pos[ia+1], az=pos[ia+2];
+      const bx=pos[ib], by=pos[ib+1], bz=pos[ib+2];
+      const cx=pos[ic], cy=pos[ic+1], cz=pos[ic+2];
+      if(!Number.isFinite(ax+ay+az+bx+by+bz+cx+cy+cz)) continue;
+      const abx=bx-ax, aby=by-ay, abz=bz-az;
+      const acx=cx-ax, acy=cy-ay, acz=cz-az;
+      const nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+      const len=Math.hypot(nx,ny,nz); if(len<=1e-9) continue;
+      const triArea=len/2; area += triArea*step;
+      vol += (ax*(by*cz-bz*cy) - ay*(bx*cz-bz*cx) + az*(bx*cy-by*cx))/6 * step;
+      const ux=Math.abs(nx/len), uy=Math.abs(ny/len), uz=Math.abs(nz/len);
+      // opposite normals are treated as the same plane direction. 0.2 bucket is enough for STEP tessellation noise.
+      const key=`${Math.round(ux/0.20)}:${Math.round(uy/0.20)}:${Math.round(uz/0.20)}`;
+      cluster.set(key,(cluster.get(key)||0)+triArea*step);
+    }
+    metrics.surfaceAreaMm2=Math.round(area);
+    metrics.volumeMm3=Math.abs(vol);
+    metrics.solidness = metrics.bboxVolumeMm3>0 ? Math.min(1, metrics.volumeMm3/metrics.bboxVolumeMm3) : 0;
+    metrics.flatness = metrics.minDim>0 ? metrics.maxDim/metrics.minDim : 0;
+    metrics.slenderness = metrics.midDim>0 ? metrics.maxDim/metrics.midDim : 0;
+    const significant=[...cluster.values()].filter(v=>area>0 && v/area>0.035);
+    metrics.normalClusterCount=significant.length;
+    metrics.normalComplexity=Math.min(1, significant.length/8);
+    metrics.cylinderLike = metrics.minDim>0 && metrics.midDim>0 && (metrics.midDim/metrics.minDim < 1.28) && (metrics.maxDim/metrics.midDim > 2.2);
+    metrics.flatPlateLike = metrics.minDim>0 && metrics.maxDim/metrics.minDim>10 && metrics.midDim/metrics.minDim>4;
+  }catch(e){ console.warn('metrics fail', e); }
+  return metrics;
+}
 
 function parseStepText(text, fileName){
   const entities = readEntities(text);
@@ -237,18 +295,23 @@ function isAssemblyName(name){ const n=String(name||'').toUpperCase(); return /(
 function norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9가-힣]/g,''); }
 
 function mergeTextPartsWithMeshes(parts, meshes){
-  const meshInfo = meshes.map((m,i)=>({idx:i, name:m.name||`MESH_${i+1}`, norm:norm(m.name||'')}));
+  const meshInfo = state.meshObjects.map((o,i)=>({idx:i, name:o.name||`MESH_${i+1}`, norm:o.norm, metrics:o.metrics}));
   return parts.map((p, i) => {
     const pn = norm(p.name);
-    let matched = meshInfo.find(mi => mi.norm && (mi.norm.includes(pn) || pn.includes(mi.norm)));
+    let matched = meshInfo.find(mi => mi.norm && pn && (mi.norm.includes(pn) || pn.includes(mi.norm)));
+    // try removing common CAD suffixes for product names and mesh names
+    if(!matched){
+      const simple = norm(String(p.name).replace(/(_REV\d+|REV\d+|_ASM|_ASSY|ASSY|ASM)$/ig,''));
+      matched = meshInfo.find(mi => mi.norm && simple && (mi.norm.includes(simple) || simple.includes(mi.norm)));
+    }
     if (!matched && meshInfo.length === parts.length) matched = meshInfo[i];
-    return {...p, meshIndex: matched?.idx ?? null, meshName: matched?.name || ''};
+    return {...p, meshIndex: matched?.idx ?? null, meshName: matched?.name || '', meshMetrics: matched?.metrics || null};
   });
 }
 
 function enrichPart(p, idx){
-  const cls = classifyPart(p.name);
-  const features = estimateFeatures(p.name, cls);
+  const features = deriveFeatures(p.name, p.meshMetrics);
+  const cls = classifyPartAdvanced(p.name, features);
   const process = cls.process;
   return {
     ...p,
@@ -262,36 +325,107 @@ function enrichPart(p, idx){
     features,
     reason: cls.reason,
     confidence: cls.confidence,
+    scores: cls.scores,
+    scoreLine: cls.scoreLine,
     quote: 0,
     selected: false
   };
 }
 
-function classifyPart(name){
-  const n = name.toUpperCase(); const reasons=[];
-  if(/BOLT|SCREW|NUT|WASHER|BEARING|RIVET|REVET|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|각관|배관|피팅|FITTING|PIE/.test(n)){ reasons.push('표준 구매품 이름'); return {process:'purchase', reason:reasons.join(', '), confidence:'높음'}; }
-  if(/PROFILE|AL[-_ ]?FRAME|3030|4040|4080|2020|4545|6060|8080/.test(n)){ reasons.push('프로파일/알루미늄 프레임 이름'); return {process:'profile', reason:reasons.join(', '), confidence:'높음'}; }
-  if(/SHAFT|PIN|BUSH|ROLLER|COLLAR|ROD|축|핀|부싱/.test(n)){ reasons.push('회전체/축류 이름'); return {process:'lathe', reason:reasons.join(', '), confidence:'보통'}; }
-  if(/BEND|BENT|FOLD|FLANGE|L[-_ ]?BRACKET|U[-_ ]?BRACKET|절곡/.test(n)){ reasons.push('절곡/플랜지 힌트'); return {process:'sheet', reason:reasons.join(', '), confidence:'높음'}; }
-  if(/HOOD|COVER|PANEL|BODY|SKEL|SIDE|TOP|BRACKET|SHEET/.test(n)){ reasons.push('판금/커버류 이름. 절곡 수는 공장 확인'); return {process:'sheet', reason:reasons.join(', '), confidence:'보통'}; }
-  if(/CASE|HOUSING|CAP|BOTTLE/.test(n)){ reasons.push('케이스/성형품 후보. 공장 선택 필요'); return {process:'unknown', reason:reasons.join(', '), confidence:'낮음'}; }
-  if(/BASE|PLATE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP/.test(n)){ reasons.push('가공품 이름'); return {process:'cnc', reason:reasons.join(', '), confidence:'보통'}; }
-  return {process:'unknown', reason:'명확한 공법 힌트 없음. 공장이 선택', confidence:'낮음'};
-}
-function estimateFeatures(name, cls){
-  const n = name.toUpperCase();
-  const tMatch = n.match(/(\d+(?:\.\d+)?)\s*T\b|T\s*(\d+(?:\.\d+)?)/);
-  let thickness = tMatch ? Number(tMatch[1]||tMatch[2]) : (cls.process==='sheet' ? 1.6 : 8);
+function deriveFeatures(name, metrics){
+  const n = String(name||'').toUpperCase();
+  const tMatch = n.match(/(?:^|[-_\s])(\d+(?:\.\d+)?)\s*T(?:$|[-_\s])|(?:^|[-_\s])T\s*(\d+(?:\.\d+)?)(?:$|[-_\s])/);
+  const tName = tMatch ? Number(tMatch[1]||tMatch[2]) : 0;
+  const m = metrics || {};
+  const minDim = Number(m.minDim)||0, midDim=Number(m.midDim)||0, maxDim=Number(m.maxDim)||0;
+  const solidness = Number(m.solidness)||0;
+  const flatPlateLike = Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>10 && midDim/minDim>4));
+  const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.16 && maxDim>60));
+  const cylinderLike = Boolean(m.cylinderLike);
+  const normalClusterCount = Number(m.normalClusterCount)||0;
+  const bendNameHint = /BEND|BENT|FOLD|FLANGE|절곡|L[-_ ]?BRACKET|U[-_ ]?BRACKET|ㄱ|ㄷ/.test(n);
+  const sheetNameHint = /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|브라켓|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
+  const thickByName = tName>=8;
+  let thickness = tName || (flatPlateLike && minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : (minDim>0 && minDim<40 ? round1(minDim) : 8)));
+  // Bend auto count only when both sheet-likeness and true bend evidence exist. 이름만 COVER/PANEL이면 0회.
   let bends = 0;
-  if(/L[-_ ]?BRACKET|LBRACKET/.test(n)) bends=1;
-  if(/U[-_ ]?BRACKET|UBRACKET/.test(n)) bends=2;
-  if(/BEND|BENT|FOLD|FLANGE|절곡/.test(n)) bends=Math.max(bends,1);
-  const screwM = n.match(/M(\d+)/); let taps = 0;
-  if(cls.process==='cnc' && /TAP|M\d+/.test(n)) taps = 1;
-  if(cls.process==='purchase') thickness = 0;
-  return {thickness, bends, taps};
+  const bendGeometryEvidence = shellLike && normalClusterCount >= 3 && !thickByName;
+  if(bendNameHint && shellLike) bends = Math.max(1, Math.min(8, normalClusterCount>0 ? normalClusterCount-1 : 1));
+  else if(bendGeometryEvidence && sheetNameHint) bends = Math.max(1, Math.min(8, normalClusterCount-2));
+  if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends = Math.max(bends,2);
+  if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends = Math.max(bends,1);
+  const taps = (/TAP|M\d+/.test(n) && !/BOLT|SCREW|NUT/.test(n)) ? 1 : 0;
+  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, bendNameHint, sheetNameHint, thickByName, bends, taps};
 }
-function defaultMaterial(process, name){ const n=name.toUpperCase(); if(process==='purchase') return 'SS400'; if(/SUS|STS|304/.test(n)) return 'SUS304'; if(process==='sheet') return 'SPCC'; if(process==='print3d'||process==='injection') return 'ABS'; return 'AL6061'; }
+function round1(v){ return Math.round(v*10)/10; }
+
+function classifyPartAdvanced(name, f){
+  const n = String(name||'').toUpperCase();
+  const scores = {purchase:0, profile:0, lathe:0, sheet:0, cnc:0, print3d:0, injection:0, welding:0, unknown:0};
+  const why = {purchase:[], profile:[], lathe:[], sheet:[], cnc:[], print3d:[], injection:[], welding:[], unknown:[]};
+  const add=(k,pts,msg)=>{ scores[k]+=pts; if(msg) why[k].push(msg); };
+
+  // 1) 구매품: 볼트/너트/리벳/파이프/피팅/니플/센서/모터는 최우선. 파이프는 프로파일보다 먼저 잡는다.
+  if(/BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n)) add('purchase',110,'표준품/구매품 이름');
+  if(/M\d+[-_ ]?L\d+/.test(n) && /BOLT|SCREW/.test(n)) add('purchase',30,'볼트/스크류 규격');
+  if(/PIPE|TUBE|PIE|NIPPLE|FITTING/.test(n)) { add('profile',-100,'파이프류는 프로파일 제외'); add('cnc',-80,'파이프류는 CNC 제외'); add('sheet',-60,'파이프류는 판금 제외'); }
+
+  // 2) 프로파일/압출: 2020/3030/4040 등. 단 PIPE/TUBE면 구매품에서 끝난다.
+  if(/PROFILE|AL[-_ ]?FRAME|EXTRUSION|3030|4040|4080|2020|4545|6060|8080/.test(n)) add('profile',90,'프로파일/압출 규격명');
+  if(f.maxDim>0 && f.metrics?.slenderness>5 && !/PIPE|TUBE|PIE/.test(n)) add('profile',18,'긴 일정 단면 가능성');
+
+  // 3) 선반: 회전체/축류. 구매품 키워드와 겹치면 구매품을 우선한다.
+  if(/SHAFT|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPACER|축|부싱/.test(n)) add('lathe',75,'축/부싱/롤러 이름');
+  if(/PIN/.test(n)) add('lathe',35,'핀 후보');
+  if(f.cylinderLike) add('lathe',45,'형상: 길쭉한 원통형 bbox');
+
+  // 4) 판금/절곡: 같은 두께 판재/쉘형 + 커버/후드/패널/바디명. 절곡은 bends 값으로 따로 관리.
+  if(f.sheetNameHint) add('sheet',32,'판금/커버/후드/패널류 이름');
+  if(f.flatPlateLike) add('sheet',42,'형상: 얇고 넓은 판재형');
+  if(f.shellLike) add('sheet',32,'형상: bbox 대비 체적 낮은 쉘/판재형');
+  if(f.tName>0 && f.tName<=6) add('sheet',28,`두께명 ${f.tName}T`);
+  if(f.tName>6) add('sheet',-35,`두께명 ${f.tName}T: 절곡 자동 제외`);
+  if(f.bends>0) add('sheet',25,`절곡 후보 ${f.bends}회`);
+  if(/HOOD|WATER[_ -]?BOTTLE|COVER|PANEL|SIDE|TOP/.test(n)) add('sheet',18,'제품명상 판금 가능성');
+
+  // 5) 사출/3D프린팅: 플라스틱 케이스류는 확정하지 않고 낮은 점수만 부여.
+  if(/PLASTIC|ABS|POM|PA66|NYLON|RESIN/.test(n)) { add('print3d',35,'플라스틱 소재명'); add('injection',35,'플라스틱 소재명'); }
+  if(/CASE|HOUSING|CAP|COVER/.test(n) && !/TOP_COVER|HOOD|PANEL/.test(n)) { add('print3d',20,'케이스류'); add('injection',18,'케이스류'); }
+
+  // 6) CNC/MCT: 구매품/프로파일/선반/판금을 빼고 남는 덩어리형·두꺼운 플레이트·지그류.
+  if(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|PLATE|BRKT/.test(n)) add('cnc',38,'가공품/지그/플레이트 이름');
+  if(f.solidness>0.28 && f.maxDim>0) add('cnc',42,'형상: bbox 대비 체적 높은 덩어리형');
+  if(f.tName>=8) add('cnc',35,`두꺼운 ${f.tName}T 소재`);
+  if(!f.sheetNameHint && !f.flatPlateLike && !f.cylinderLike && scores.purchase<50 && scores.profile<50) add('cnc',18,'다른 공법 제외 후 절삭 후보');
+  if(f.shellLike || f.flatPlateLike) add('cnc',-35,'판재/쉘형이므로 CNC 감점');
+
+  // Strong exclusion by higher-priority classes.
+  if(scores.purchase>=80){ ['profile','lathe','sheet','cnc','print3d','injection','welding'].forEach(k=>scores[k]-=80); }
+  if(scores.profile>=80){ ['sheet','cnc'].forEach(k=>scores[k]-=55); }
+  if(scores.lathe>=80){ ['sheet','cnc'].forEach(k=>scores[k]-=35); }
+  if(scores.sheet>=75){ scores.cnc-=45; }
+
+  const order=['purchase','profile','lathe','sheet','cnc','print3d','injection','welding'];
+  const ranked=order.map(k=>[k,scores[k]]).sort((a,b)=>b[1]-a[1]);
+  const [best,bestScore]=ranked[0]; const secondScore=ranked[1]?.[1] ?? 0;
+  let process=best, confidence='낮음';
+  if(bestScore<42 || bestScore-secondScore<12){ process='unknown'; confidence='낮음'; add('unknown',1,'공장이 선택 필요'); }
+  else if(bestScore>=92 && bestScore-secondScore>=25) confidence='높음';
+  else confidence='보통';
+  const reasonKey = process==='unknown' ? best : process;
+  const reason = (why[reasonKey]||[]).slice(0,4).join(' / ') || '명확한 자동분류 근거 부족';
+  const scoreLine = ranked.slice(0,4).map(([k,v])=>`${PROCESS_LABELS[k]} ${Math.round(v)}`).join(' · ');
+  return {process, reason, confidence, scores, scoreLine};
+}
+
+function defaultMaterial(process, name){
+  const n=String(name||'').toUpperCase();
+  if(/SUS|STS|304|HOOD|WATER[_ -]?BOTTLE|NIPPLE|PIPE|TUBE|PIE/.test(n)) return 'SUS304';
+  if(process==='purchase') return 'SS400';
+  if(process==='sheet') return 'SPCC';
+  if(process==='print3d'||process==='injection') return /POM/.test(n)?'POM':'ABS';
+  return 'AL6061';
+}
 function getDefaultMargin(process){ return Number(state.rates?.process?.[process]?.margin ?? 0); }
 
 function recalcAll(){ state.parts.forEach(p => p.quote = calcQuote(p)); updateStats(); }
@@ -300,13 +434,26 @@ function calcQuote(p){
   const materialRate = material.market * (1 + (Number(material.markupPercent)||0)/100);
   const matCost = estimateMaterialCost(p, materialRate);
   let procCost = 0; const pr = state.rates.process[p.process] || state.rates.process.unknown;
+  const f = p.features || {}; const maxDim = Number(f.maxDim)||0; const volCm3 = (Number(f.metrics?.volumeMm3)||0)/1000;
+  const sizeKey = maxDim > 300 ? 'large' : (maxDim > 120 ? 'medium' : 'small');
   if(p.process==='unknown') return 0;
   if(p.process==='purchase') procCost = purchaseUnitPrice(p.name) * q;
-  else if(p.process==='profile') procCost = ((pr.base||0) + 0.6*(pr.perMeter||0) + (pr.cut||0)*2 + (Number(p.taps)||0)*(pr.tap||0))*q;
-  else if(p.process==='lathe') procCost = ((pr.small||0) + (Number(p.taps)||0)*(pr.tap||0))*q;
-  else if(p.process==='sheet') procCost = ((pr.base||0) + (Number(p.bends)||0)*(pr.bend||0) + (Number(p.taps)||0)*(pr.tap||0))*q;
-  else if(p.process==='cnc') procCost = ((pr.small||0) + (Number(p.taps)||0)*(pr.tap||0))*q;
-  else if(p.process==='print3d') procCost = ((pr.perCm3||0)*80)*q;
+  else if(p.process==='profile') {
+    const lengthM = Math.max(0.1, (maxDim || 600)/1000);
+    procCost = ((pr.base||0) + lengthM*(pr.perMeter||0) + (pr.cut||0)*2 + (Number(p.taps)||0)*(pr.tap||0))*q;
+  }
+  else if(p.process==='lathe') procCost = (((pr[sizeKey]||pr.small||0)) + (Number(p.taps)||0)*(pr.tap||0))*q;
+  else if(p.process==='sheet') {
+    const bendPremium = Number(p.bends||0)*(pr.bend||0);
+    const tapPremium = Number(p.taps||0)*(pr.tap||0);
+    const sizePremium = maxDim>800 ? 12000 : (maxDim>400 ? 6000 : 0);
+    procCost = ((pr.base||0) + bendPremium + tapPremium + sizePremium)*q;
+  }
+  else if(p.process==='cnc') {
+    const complexity = Math.max(0, Math.min(1, (f.metrics?.normalComplexity||0) + (f.solidness>0.35?0.15:0)));
+    procCost = (((pr[sizeKey]||pr.small||0)) + (Number(p.taps)||0)*(pr.tap||0) + Math.round(complexity*25000))*q;
+  }
+  else if(p.process==='print3d') procCost = ((pr.perCm3||0)*Math.max(20,volCm3))*q;
   else if(p.process==='injection') procCost = ((pr.piece||0)*q);
   else if(p.process==='welding') procCost = ((pr.base||0))*q;
   const subtotal = matCost + procCost;
@@ -315,6 +462,12 @@ function calcQuote(p){
 function estimateMaterialCost(p, materialRate){
   if(p.process==='purchase' || p.process==='unknown') return 0;
   const q=Number(p.quantity)||0; const t=Number(p.thickness)||1;
+  const density = Number((state.rates.materials[p.material]||{}).density)||2.7;
+  const mm3 = Number(p.features?.metrics?.volumeMm3)||0;
+  if(mm3>0){
+    const kg = (mm3 * density) / 1000000; // mm3 -> cm3 -> g -> kg
+    if(Number.isFinite(kg) && kg>0 && kg<10000) return Math.round(kg * q * materialRate);
+  }
   let kg = 0.05;
   if(p.process==='sheet') kg = Math.max(0.05, t * 0.18);
   else if(p.process==='profile') kg = 0.5;
@@ -324,7 +477,13 @@ function estimateMaterialCost(p, materialRate){
   else if(p.process==='injection') kg = 0.03;
   return Math.round(kg * q * materialRate);
 }
-function purchaseUnitPrice(name){ const n=name.toUpperCase(); if(/SCREW/.test(n)) return 70; if(/BOLT/.test(n)) return 120; if(/NUT/.test(n)) return 50; if(/RIVET|REVET/.test(n)) return 60; if(/BEARING/.test(n)) return 2500; if(/NIPPLE|PIPE|TUBE|PIE/.test(n)) return 2500; return 1000; }
+function purchaseUnitPrice(name){
+  const n=String(name||'').toUpperCase();
+  if(/SCREW/.test(n)) return 70; if(/BOLT/.test(n)) return 120; if(/HEX[_ -]?NUT|\bNUT\b/.test(n)) return 50; if(/RIVET|REVET/.test(n)) return 60;
+  if(/BEARING/.test(n)) return 2500; if(/SENSOR/.test(n)) return 12000; if(/MOTOR/.test(n)) return 45000;
+  if(/NIPPLE|FITTING/.test(n)) return 2500; if(/PIPE|TUBE|PIE/.test(n)) return 3500; if(/LEAD/.test(n)) return 18000;
+  return 1000;
+}
 
 function renderParts(){
   const body=$('partsBody');
@@ -333,7 +492,7 @@ function renderParts(){
     <tr data-id="${esc(p.id)}" class="${p.id===state.selectedId?'active':''}">
       <td><div class="part-name">${esc(p.name)}</div><div class="hint">${esc(p.source||'leaf')} ${p.meshName?`/ mesh: ${esc(p.meshName)}`:''}</div></td>
       <td><input data-field="quantity" data-id="${esc(p.id)}" type="number" min="0" value="${p.quantity}"></td>
-      <td><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span><div class="hint">${esc(p.reason)} / 신뢰도 ${esc(p.confidence)}</div></td>
+      <td><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span><div class="hint">${esc(p.reason)} / 신뢰도 ${esc(p.confidence)}<br>${esc(p.scoreLine||'')}</div></td>
       <td>${selectHtml(p,'process',PROCESSES.map(x=>[x,PROCESS_LABELS[x]]))}</td>
       <td>${selectHtml(p,'material',MATERIALS.map(x=>[x,x]))}</td>
       <td><input data-field="thickness" data-id="${esc(p.id)}" type="number" min="0" step="0.1" value="${p.thickness}"></td>
@@ -351,9 +510,10 @@ function selectPart(id){ state.selectedId=id; renderParts(); renderSelected(); c
 function renderSelected(){
   const p=state.parts.find(x=>x.id===state.selectedId); const panel=$('selectedPanel');
   if(!p){ panel.innerHTML='<h2>선택 파트 검토</h2><p class="muted">파트를 선택하세요.</p>'; return; }
+  const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
   panel.innerHTML = `<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3><div class="preview-box">${esc(PROCESS_LABELS[p.process]||p.process)}</div>
-    <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span></div>
-    <p class="mini">${esc(p.reason)}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
+    <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">신뢰도 ${esc(p.confidence)}</span></div>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
 function isolateSelectedMesh(p){

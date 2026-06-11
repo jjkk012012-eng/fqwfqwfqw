@@ -1,12 +1,24 @@
-공장용 STEP 견적 계산기 Real Viewer V5
+공장용 STEP 견적 계산기 - Classifier V6
 
-사용 방법
-1. 이 폴더의 파일(index.html, styles.css, app.js, vendor, data)을 GitHub 저장소 root에 넣습니다.
-2. GitHub Pages를 main / root로 배포합니다.
-3. 페이지에서 STEP/STP 파일 선택 버튼을 눌러 업로드합니다.
+이번 버전 핵심:
+1. 파일 선택 버튼/드래그 업로드 동작 유지
+2. vendor 폴더에 OCCT/Three.js 포함, CDN 의존 없음
+3. OCCT mesh가 잡히면 실제 3D 뷰어 표시
+4. 말단 파트명은 STEP PRODUCT_DEFINITION -> PRODUCT 매핑 우선
+5. 공법 자동분류를 이름만으로 하지 않고 mesh bbox/체적비/평면군/두께명/파트명을 점수화
+6. 파이프/튜브/니플/피팅/볼트/너트/리벳/스크류/센서/모터/리드류는 구매품 우선
+7. 프로파일은 2020/3030/4040/4080/PROFILE 계열만, PIPE/TUBE는 구매품 우선
+8. 선반은 SHAFT/BUSH/ROLLER/COLLAR/ROD 또는 길쭉한 원통형 mesh 기준
+9. 판금은 HOOD/COVER/PANEL/BODY/SIDE/TOP/WATER_BOTTLE 등 이름 + 얇은 판재/쉘형 mesh 기준
+10. 절곡 자동값은 얇은 판재/쉘형 + normal cluster 또는 BEND/FLANGE/L/U BRACKET 힌트가 있을 때만 생성
+11. CNC는 구매품/프로파일/선반/판금을 먼저 제외한 뒤, 덩어리형 체적비/두꺼운 T/BASE/BLOCK/JIG/PLATE류 기준으로 판단
+12. 신뢰도 낮거나 점수차가 작으면 '분류 필요'로 두고 공장이 직접 선택
 
-중요
-- 외부 CDN을 쓰지 않습니다. occt-import-js wasm과 Three.js를 vendor 폴더에 포함했습니다.
-- 브라우저 보안상 로컬 더블클릭보다 GitHub Pages 또는 python -m http.server 실행을 권장합니다.
-- OCCT mesh 파싱 성공 시 3D 뷰어에 실제 mesh를 표시합니다.
-- STEP 텍스트 파서는 PRODUCT_DEFINITION_FORMATION -> PRODUCT 매핑을 사용해 "Next assembly relationship" 대신 실제 제품명을 표시합니다.
+GitHub Pages 업로드:
+- ZIP 안의 index.html, styles.css, app.js, README.txt, data 폴더, vendor 폴더를 저장소 root에 넣으세요.
+- 폴더째 넣지 말고 내용물만 넣어야 합니다.
+- Push 후 Pages에서 Ctrl+F5로 새로고침하세요.
+
+주의:
+- STEP에서 공차/재질/진짜 절곡 R/나사산이 항상 들어있지는 않습니다.
+- 이 프로그램은 자동 추천을 먼저 채우고, 공장이 최종 수정하는 구조입니다.
