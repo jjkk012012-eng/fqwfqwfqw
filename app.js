@@ -281,7 +281,7 @@ function won(n){ return nf.format(Math.round(Number(n)||0))+'원'; }
 function num(v,d=0){ const n=Number(v); return Number.isFinite(n)?n:d; }
 function norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9가-힣]/g,''); }
 function cleanName(s){ return String(s||'').replace(/^['"]|['"]$/g,'').trim(); }
-function isBadName(name){ const n=String(name||'').trim(); return !n || /^#?\d+$/.test(n) || /^PRODUCT_DEFINITION/i.test(n) || /^NEXT ASSEMBLY RELATIONSHIP$/i.test(n) || /^DESIGN$/i.test(n); }
+function isBadName(name){ const n=String(name||'').trim(); const nn=norm(n); return !n || /^#?\d+$/.test(n) || /^MESH[_-]?\d+$/i.test(n) || /^MESH\d+$/i.test(nn) || /^PRODUCT_DEFINITION/i.test(n) || /^NEXT ASSEMBLY RELATIONSHIP$/i.test(n) || /^DESIGN$/i.test(n); }
 function isAssemblyName(name){ return /(^|[_-])(ASSY|ASM|ASSEMBLY)([_-]|$)/i.test(name); }
 
 function initViewer(){
@@ -319,20 +319,20 @@ function showPart(part){
   if(!part) return;
   state.meshObjects.forEach(o=>o.group.visible=false);
   let shown=false;
-  if(part.meshNorm){
+  if(part.meshIndex!=null && state.meshObjects[part.meshIndex]){ state.meshObjects[part.meshIndex].group.visible=true; shown=true; }
+  if(!shown && part.meshNorm){
     const g=state.meshByNorm.get(part.meshNorm);
     if(g){ g.visible=true; shown=true; }
   }
-  if(!shown && part.meshName){
+  if(!shown && part.meshName && !isNumberishMesh(part.meshName)){
     const pn=norm(part.meshName);
     for(const o of state.meshObjects){
-      if(o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm)){ o.group.visible=true; shown=true; break; }
+      if(!isNumberishMesh(o.name) && (o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm))){ o.group.visible=true; shown=true; break; }
     }
   }
   if(!shown){
-    // 매칭 형상이 없으면 어셈블리 전체를 보여주지 않는다.
     hideAllMeshes();
-    setMessage('warn', `${part.name} 형상을 찾지 못했습니다. 표에서는 견적 입력이 가능합니다.`);
+    setMessage('warn', `${part.name} 형상 매칭 없음: 어셈블리 전체는 표시하지 않고 견적표만 사용합니다.`);
     return;
   }
   fitCamera(true);
@@ -437,22 +437,48 @@ function baseFileName(n){ return String(n||'').replace(/\.[^.]+$/,''); }
 function groupByName(rows){ const map=new Map(); for(const r of rows){ const key=norm(r.name); if(!key||isBadName(r.name)) continue; if(!map.has(key)) map.set(key,{...r, qty:0}); map.get(key).qty += Math.max(1,num(r.qty,1)); } return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name)); }
 
 function makeParts(textInfo, meshes){
-  const validMesh=meshes.map((m,i)=>({name:m.name||`MESH_${i+1}`,norm:norm(m.name||''),metrics:findMeshMetrics(m.name)})).filter(m=>!isBadName(m.name)&&!isAssemblyName(m.name));
-  const matched=new Set(); const result=[];
+  // 견적표는 STEP 텍스트에서 얻은 실제 말단 PRODUCT만 사용한다.
+  // OCCT mesh는 뷰어 매칭용으로만 쓰고, MESH_41 같은 일반 mesh 이름은 표에 추가하지 않는다.
+  const meshList=state.meshObjects.map((o,i)=>({name:o.name||`MESH_${i+1}`, norm:o.norm||norm(o.name||''), metrics:o.metrics, index:i}));
+  const usableMeshes=meshList.filter(m=>!isAssemblyName(m.name));
+  const result=[];
   for(const p of textInfo.parts){
-    const pn=norm(p.name); let mesh=validMesh.find(m=>m.norm===pn) || validMesh.find(m=>m.norm.includes(pn)||pn.includes(m.norm));
-    if(mesh) matched.add(mesh.norm);
-    result.push({...p, meshName:mesh?.name||'', meshNorm:mesh?.norm||'', metrics:mesh?.metrics||null});
+    if(isBadName(p.name) || isAssemblyName(p.name)) continue;
+    const pn=norm(p.name);
+    let mesh=usableMeshes.find(m=>m.norm===pn);
+    if(!mesh){
+      mesh=usableMeshes.find(m=>!isBadName(m.name) && pn.length>4 && m.norm.includes(pn));
+    }
+    if(!mesh){
+      mesh=usableMeshes.find(m=>!isBadName(m.name) && m.norm.length>4 && pn.includes(m.norm));
+    }
+    result.push({...p, meshName:mesh?.name||'', meshNorm:mesh?.norm||'', metrics:mesh?.metrics||null, meshIndex:mesh?.index});
   }
-  for(const m of validMesh){
-    if(matched.has(m.norm)) continue;
-    if(textInfo.parts.length && isNumberishMesh(m.name)) continue;
-    result.push({name:m.name, qty:1, source:'3D mesh', meshName:m.name, meshNorm:m.norm, metrics:m.metrics});
+  // 텍스트에서 파트명이 아예 없을 때만 mesh를 fallback으로 사용한다.
+  if(!result.length){
+    for(const m of usableMeshes){
+      if(isBadName(m.name) || isAssemblyName(m.name)) continue;
+      result.push({name:m.name, qty:1, source:'3D mesh fallback', meshName:m.name, meshNorm:m.norm, metrics:m.metrics, meshIndex:m.index});
+    }
   }
-  return groupByName(result).map(p=>({ ...p, meshName:result.find(r=>norm(r.name)===norm(p.name))?.meshName||'', meshNorm:result.find(r=>norm(r.name)===norm(p.name))?.meshNorm||'', metrics:result.find(r=>norm(r.name)===norm(p.name))?.metrics||null }));
+  const grouped=new Map();
+  for(const r of result){
+    const key=dedupeKey(r.name);
+    if(!key) continue;
+    if(!grouped.has(key)) grouped.set(key,{...r, qty:0});
+    const g=grouped.get(key);
+    g.qty += Math.max(1,num(r.qty,1));
+    if(!g.meshName && r.meshName){ g.meshName=r.meshName; g.meshNorm=r.meshNorm; g.metrics=r.metrics; g.meshIndex=r.meshIndex; }
+  }
+  return [...grouped.values()].sort((a,b)=>a.name.localeCompare(b.name));
+}
+function dedupeKey(name){
+  const n=norm(name);
+  if(!n || /^MESH\d+$/.test(n) || /^PRODUCTDEFINITION/.test(n) || n==='DESIGN') return '';
+  return n;
 }
 function findMeshMetrics(name){ const n=norm(name); return state.meshObjects.find(o=>o.norm===n)?.metrics || null; }
-function isNumberishMesh(name){ return /^#?\d+$/.test(String(name).trim()) || /^MESH_\d+$/i.test(name); }
+function isNumberishMesh(name){ const n=norm(name); return /^#?\d+$/.test(String(name).trim()) || /^MESH[_-]?\d+$/i.test(String(name).trim()) || /^MESH\d+$/.test(n); }
 
 function computeMeshMetrics(raw, geom){
   const pos=raw.attributes?.position?.array||[], idx=raw.index?.array||[]; const m={dims:[0,0,0],minDim:0,midDim:0,maxDim:0,bboxVolume:0,volume:0,area:0,solidness:0,flatness:0,slenderness:0,cylinderLike:false,sheetLike:false,holeScore:0,bendSignal:0};
@@ -546,7 +572,6 @@ function estimatePurchaseUnit(name){
 }
 function round(n,d=2){ const p=10**d; return Math.round((Number(n)||0)*p)/p; }
 
-function recalcAll(){ state.parts.forEach(calcPart); updateStats(); }
 function recalcAll(){ state.parts.forEach(calcPart); updateStats(); }
 function materialKgPrice(material,process){
   const mat=state.rates.materials[material]||{};
