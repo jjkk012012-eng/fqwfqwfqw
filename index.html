@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>공장용 STEP 견적 계산기 - V13 정확도 개선</title>
+  <title>공장용 STEP 견적 계산기 - V14 공장장 간편/정확도 개선</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>공장용 STEP 견적 계산기</h1>
-      <p>STEP 파일을 올리면 말단 파트만 뽑고, 원형 홀·절곡 후보를 자동 계산한 뒤 공장이 바로 수정합니다.</p>
+      <p>STEP 파일을 올리면 말단 파트만 뽑고, 재료중량·구매단가·홀·절곡·공정비를 자동 초깃값으로 채운 뒤 공장이 바로 수정합니다.</p>
     </div>
     <span class="pill">플랫폼 수수료 0원</span>
   </header>
@@ -24,7 +24,7 @@
         </button>
         <div id="dropZone" class="drop-zone" role="button" tabindex="0">
           <strong>또는 여기에 파일을 드래그하세요</strong>
-          <span>클릭도 가능합니다. 파일 선택이 안 되면 위 버튼을 누르세요.</span>
+          <span>파일 선택 → 파트 클릭 → 공법/홀/절곡/구매단가만 수정하면 됩니다.</span>
         </div>
       </section>
 
@@ -43,7 +43,7 @@
         <div class="card-title-row">
           <div>
             <h2>3D 뷰어</h2>
-            <p id="viewerStatus">파트를 누르면 해당 형상만 크게 표시합니다. 원형 형상은 홀 후보, 플랜지는 절곡 후보로 초기 입력됩니다.</p>
+            <p id="viewerStatus">파트를 누르면 해당 형상만 표시합니다. 원형 루프는 홀 후보, 기준판에서 접힌 플랜지는 절곡 후보로 넣습니다.</p>
           </div>
           <div class="actions">
             <button id="showAllBtn" type="button">전체 보기</button>
@@ -71,14 +71,16 @@
                 <th>공법</th>
                 <th>재질</th>
                 <th>두께</th>
+                <th>kg/개</th>
                 <th>홀/탭</th>
                 <th>절곡</th>
+                <th>구매단가</th>
                 <th>마진%</th>
                 <th>견적가</th>
               </tr>
             </thead>
             <tbody id="partsBody">
-              <tr><td colspan="10" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
+              <tr><td colspan="12" class="empty-row">아직 분석된 파트가 없습니다.</td></tr>
             </tbody>
           </table>
         </div>
@@ -102,6 +104,8 @@
         <div id="marginEditor" class="rate-list"></div>
         <h3>재료 시세 + 할증</h3>
         <div id="materialEditor" class="rate-list"></div>
+        <h3>공정별 단가</h3>
+        <div id="processEditor" class="rate-list compact-rate"></div>
       </section>
     </aside>
   </main>
