@@ -1,13 +1,11 @@
-공장용 STEP 견적 계산기 V12
+공장용 STEP 견적 계산기 V13
 
-핵심 변경
-- 공장장용 간편 레이아웃으로 정리했습니다.
-- STEP/STP 업로드 후 말단 파트만 표에 표시합니다.
-- 파트 클릭 시 해당 3D mesh만 단독 표시합니다.
-- 판금은 mesh 기준으로 원형/타원형 성분을 홀 후보로 계산합니다.
-- 판금은 기준판에서 꺾여 나온 플랜지/연결 패치를 절곡 후보로 계산합니다.
-- 절곡/홀 값은 자동 초기값이며, 표에서 바로 수정할 수 있습니다.
-- 구매품, 프로파일, 선반, 판금/절곡, CNC/MCT 순서로 분류합니다.
+수정 내용:
+- #숫자 leaf / PRODUCT_DEFINITION 가짜 행 제거 강화
+- STEP 텍스트 PRODUCT leaf가 충분히 잡히면 mesh-only 중복 행을 견적표에 추가하지 않음
+- 원형/타원형 feature loop를 홀 후보로 계산
+- 절곡은 판면 방향, 플랜지 패치, hard feature edge를 함께 계산
+- 공장장용 단순 레이아웃 유지
 
-업로드
-index.html, styles.css, app.js, README.txt, data 폴더, vendor 폴더를 GitHub 저장소 root에 넣으세요.
+업로드 방법:
+ZIP 안의 index.html, styles.css, app.js, README.txt, data/, vendor/ 를 저장소 root에 넣고 Push 하세요.
