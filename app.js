@@ -895,7 +895,7 @@ function rowHTML(p){
   return `<tr data-id="${p.id}" class="${p.id===state.selectedId?'selected':''}">
     <td><span class="part-name">${esc(p.name)}</span><span class="sub">${p.meshName?'mesh: '+esc(p.meshName):'형상 연결 확인'}</span></td>
     <td><input data-act="qty" data-id="${p.id}" value="${p.qty}"></td>
-    <td><span class="pill ${rec.confidence==='높음'?'high':rec.confidence==='보통'?'mid':'low'}">${processLabel(rec.process)} · ${rec.confidence}</span><div class="score-line">${esc((rec.reasons||[]).slice(0,2).join(' / '))}</div></td>
+    <td><span class="pill ${rec.confidence==='높음'?'high':rec.confidence==='보통'?'mid':'low'}">${processLabel(rec.process)} · ${rec.confidence}</span></td>
     <td><select data-act="process" data-id="${p.id}">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></td>
     <td><select data-act="material" data-id="${p.id}">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></td>
     <td><label class="status-small">${inputLabel}</label><input data-act="input" data-id="${p.id}" value="${inputVal}"></td>
@@ -911,7 +911,7 @@ function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manual
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
-  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,4).join(' / ')||'-')}</div><div class="calcnote">공법점수: 판금 ${Math.round(p.score?.scores?.sheet||0)} · 사출 ${Math.round(p.score?.scores?.injection||0)} · CNC ${Math.round(p.score?.scores?.cnc||0)}</div><div class="calcnote">두께추정: ${fmt1(p.metrics?.estimatedThickness||0)}mm · 복잡도: ${fmt1(p.metrics?.complexityScore||0)} · 판금후보: ${(p.metrics?.sheetLike||p.metrics?.paperFoldLike||p.metrics?.sheetByThickness)?'가능':'낮음'} · 접힌판: ${(p.metrics?.paperFoldLike)?'가능':'낮음'} · 평면비율: ${fmt1((p.metrics?.planarRatio||0)*100)}% · 리브/보스: ${(p.metrics?.ribLike)?'가능':'낮음'}</div><div class="details-grid">
+  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">견적 계산값은 공법·재질·수량·입력값 수정 시 즉시 반영됩니다.</div><div class="details-grid">
     <div><label>예상중량 kg/개</label><input id="selWeight" value="${kgEach(p).toFixed(4)}"></div>
     <div><label>크기 mm</label><input value="${esc(dims||'-')}" disabled></div>
     <div><label>체적 cm³</label><input value="${volumeCm3(p).toFixed(2)}" disabled></div>
