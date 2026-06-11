@@ -514,30 +514,49 @@ function deriveFeatures(name, metrics){
   const dominantPlaneDirections = Number(m.dominantPlaneDirections)||0;
   const normalClusterCount = Number(m.normalClusterCount)||0;
   const flatPlateLike = Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>7 && midDim/minDim>2.2));
-  const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.22 && maxDim>45 && minDim>0 && maxDim/minDim>4));
+  const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.24 && maxDim>45 && minDim>0 && maxDim/minDim>4));
   const cylinderLike = Boolean(m.cylinderLike);
+  const purchaseName = /BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n);
   const bendNameHint = /BEND|BENT|FOLD|FLANGE|절곡|L[-_ ]?BRACKET|U[-_ ]?BRACKET|ㄱ|ㄷ/.test(n);
   const sheetNameHint = /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|브라켓|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
   const thickByName = tName>=10;
   let thickness = tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
+  const sheetGeometry = (flatPlateLike || shellLike || (sheetNameHint && minDim>0 && minDim<=8)) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName && !purchaseName;
 
-  // 절곡 기준 V8:
-  // 1) OCCT mesh가 있으면, 기준판을 제외한 위치가 다른 플랜지/귀 패치 개수를 우선 사용한다.
-  // 2) 이름만 보고 절곡을 확정하지 않는다. 다만 L/U bracket 같은 명확한 힌트는 최소값을 보정한다.
-  // 3) 같은 두께 판재 + 플랜지 패치 4개이면 절곡 4회로 들어간다.
+  // V9 절곡 기준
+  // 실제 STEP mesh에서 플랜지 패치가 잡히면 그 값을 우선한다.
+  // 다만 HOOD_BODY류처럼 큰 기준판 + 좌우/상하 귀가 있는 판금은 exporter가 한 방향으로만 tessellation되어 patch가 0으로 떨어질 수 있어,
+  // 제품명과 판재형 치수를 함께 보고 기본 후보를 보정한다. 자동값은 "확정"이 아니라 공장 수정용 초기값이다.
   let bends = 0;
-  const sheetGeometry = (flatPlateLike || shellLike) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName;
   const patchBends = Number(m.bendPatchCount)||0;
   const directionBasedBends = sheetGeometry && majorPlaneDirections >= 2 ? Math.max(1, Math.min(8, majorPlaneDirections - 1)) : 0;
   if(sheetGeometry && patchBends > 0) bends = patchBends;
-  else if(sheetGeometry && bendNameHint) bends = Math.max(1, directionBasedBends || 1);
-  else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = directionBasedBends;
-  else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.18) bends = Math.max(1, majorPlaneDirections - 2);
+  if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) bends = Math.max(bends, 4);
+  else if(sheetGeometry && /TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)) bends = Math.max(bends, 4);
+  else if(sheetGeometry && /WATER[_ -]?BOTTLE.*(SIDE|TOP)|SIDE.*WATER[_ -]?BOTTLE/.test(n)) bends = Math.max(bends, 2);
+  else if(sheetGeometry && bendNameHint) bends = Math.max(bends, directionBasedBends || 1);
+  else if(sheetGeometry && sheetNameHint && majorPlaneDirections >= 2) bends = Math.max(bends, directionBasedBends);
+  else if(sheetGeometry && majorPlaneDirections >= 3 && solidness < 0.20) bends = Math.max(bends, majorPlaneDirections - 2);
   if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends = Math.max(bends,2);
   if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends = Math.max(bends,1);
+  bends = Math.max(0, Math.min(12, Math.round(bends)));
 
-  const taps = (/TAP|M\d+/.test(n) && !/BOLT|SCREW|NUT/.test(n)) ? 1 : 0;
-  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends};
+  // V9 홀/탭 후보 기준
+  // STEP mesh만으로는 나사산인지 단순 홀인지 확정 불가. 그래서 이 값은 "홀/탭 후보"로 표시하고,
+  // 판금이면 타공비, CNC/선반/프로파일이면 탭비로 계산한다. 공장이 최종 수정한다.
+  let holeCandidates = 0;
+  if(!purchaseName){
+    if(/TAP|M\d+/.test(n)) holeCandidates = Math.max(holeCandidates, 1);
+    if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) holeCandidates = Math.max(holeCandidates, 4);
+    else if(sheetGeometry && /TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)) holeCandidates = Math.max(holeCandidates, 4);
+    else if(sheetGeometry && /WATER[_ -]?BOTTLE.*(SIDE|TOP)|SIDE.*WATER[_ -]?BOTTLE/.test(n)) holeCandidates = Math.max(holeCandidates, 2);
+    else if(sheetGeometry && sheetNameHint && maxDim>150) holeCandidates = Math.max(holeCandidates, 2);
+    if(sheetGeometry && normalClusterCount>=8) holeCandidates = Math.max(holeCandidates, Math.min(12, Math.round((normalClusterCount-5)/2)));
+  }
+  const taps = Math.max(0, Math.round(holeCandidates));
+  const holeDebug = purchaseName ? '구매품은 홀/탭 자동 0' : (taps>0 ? `홀/탭 후보 ${taps}개: 이름/판금 형상 기준 초기값` : '홀/탭 후보 없음');
+  const bendDebug = bends>0 ? `절곡 후보 ${bends}회: ${patchBends>0?'mesh 플랜지 패치':'판금명/형상 보정'} 기준 초기값` : '절곡 후보 없음';
+  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends, holeDebug, bendDebug};
 }
 
 function round1(v){ return Math.round(v*10)/10; }
@@ -630,7 +649,7 @@ function calcQuote(p){
   else if(p.process==='lathe') procCost = (((pr[sizeKey]||pr.small||0)) + (Number(p.taps)||0)*(pr.tap||0))*q;
   else if(p.process==='sheet') {
     const bendPremium = Number(p.bends||0)*(pr.bend||0);
-    const tapPremium = Number(p.taps||0)*(pr.tap||0);
+    const tapPremium = Number(p.taps||0)*(p.process==='sheet' ? (pr.hole||pr.tap||0) : (pr.tap||0));
     const sizePremium = maxDim>800 ? 12000 : (maxDim>400 ? 6000 : 0);
     procCost = ((pr.base||0) + bendPremium + tapPremium + sizePremium)*q;
   }
@@ -698,7 +717,7 @@ function renderSelected(){
   const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
   panel.innerHTML = `<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3><div class="preview-box">${esc(PROCESS_LABELS[p.process]||p.process)}</div>
     <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">신뢰도 ${esc(p.confidence)}</span></div>
-    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0} / 절곡패치: ${m.bendPatchCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}${m.bendPatchDebug ? '<br>절곡판정: '+esc(m.bendPatchDebug) : ''}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0} / 절곡패치: ${m.bendPatchCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}${m.bendPatchDebug ? '<br>절곡판정: '+esc(m.bendPatchDebug) : ''}<br>${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
 function isolateSelectedMesh(p){
@@ -728,6 +747,6 @@ function renderRateEditors(){
 function updateStats(){ $('statParts').textContent=state.parts.length; $('statAssemblies').textContent=state.debug?.text?.assemblyExcludedCount||0; $('statEntities').textContent=state.debug?.text?.entityCount||0; $('statMeshes').textContent=state.meshObjects.length; $('statTotal').textContent=won(state.parts.reduce((a,p)=>a+(p.quote||0),0)); }
 function renderDebug(){ $('debugPre').textContent = JSON.stringify(state.debug,null,2); }
 function setMessage(type, text){ const m=$('message'); m.className=`message ${type}`; m.textContent=text; }
-function exportCsv(){ const rows=[['파트명','수량','공법','재질','두께','탭','절곡','마진','견적']].concat(state.parts.map(p=>[p.name,p.quantity,PROCESS_LABELS[p.process],p.material,p.thickness,p.taps,p.bends,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote_parts.csv'; a.click(); URL.revokeObjectURL(a.href); }
+function exportCsv(){ const rows=[['파트명','수량','공법','재질','두께','홀/탭','절곡','마진','견적']].concat(state.parts.map(p=>[p.name,p.quantity,PROCESS_LABELS[p.process],p.material,p.thickness,p.taps,p.bends,p.margin,p.quote])); const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n'); const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='step_quote_parts.csv'; a.click(); URL.revokeObjectURL(a.href); }
 function esc(v){ return String(v??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function won(v){ return `${Math.round(Number(v)||0).toLocaleString('ko-KR')}원`; }
