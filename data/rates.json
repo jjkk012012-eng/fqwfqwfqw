@@ -1,21 +1,88 @@
 {
   "materials": {
-    "AL6061": {"market": 6200, "markupPercent": 18, "density": 2.70},
-    "SUS304": {"market": 4800, "markupPercent": 25, "density": 7.93},
-    "SS400": {"market": 1250, "markupPercent": 20, "density": 7.85},
-    "SPCC": {"market": 1350, "markupPercent": 18, "density": 7.85},
-    "ABS": {"market": 3800, "markupPercent": 20, "density": 1.04},
-    "POM": {"market": 8200, "markupPercent": 20, "density": 1.41}
+    "AL6061": {
+      "market": 6200,
+      "markupPercent": 18,
+      "density": 2.7
+    },
+    "SUS304": {
+      "market": 4800,
+      "markupPercent": 25,
+      "density": 7.93
+    },
+    "SS400": {
+      "market": 1250,
+      "markupPercent": 20,
+      "density": 7.85
+    },
+    "SPCC": {
+      "market": 1350,
+      "markupPercent": 18,
+      "density": 7.85
+    },
+    "ABS": {
+      "market": 3800,
+      "markupPercent": 20,
+      "density": 1.04
+    },
+    "POM": {
+      "market": 8200,
+      "markupPercent": 20,
+      "density": 1.41
+    }
   },
   "process": {
-    "purchase": {"margin": 10},
-    "profile": {"base": 1500, "perMeter": 12000, "cut": 1000, "tap": 1500, "margin": 15},
-    "lathe": {"small": 18000, "medium": 45000, "large": 90000, "tap": 1800, "margin": 20},
-    "sheet": {"base": 18000, "bend": 2500, "hole": 300, "tap": 1500, "margin": 18},
-    "cnc": {"small": 45000, "medium": 110000, "large": 240000, "hole": 600, "tap": 2000, "margin": 22},
-    "print3d": {"perCm3": 450, "supportPercent": 15, "margin": 28},
-    "injection": {"piece": 120, "moldSimple": 0, "moldNormal": 0, "margin": 20},
-    "welding": {"base": 30000, "point": 5000, "margin": 22},
-    "unknown": {"margin": 0}
+    "purchase": {
+      "margin": 10
+    },
+    "sheet": {
+      "setup": 15000,
+      "pieceBase": 3000,
+      "bend": 3200,
+      "hole": 450,
+      "cutBase": 5000,
+      "margin": 18
+    },
+    "cnc": {
+      "setup": 45000,
+      "hourly": 60000,
+      "hoursPerKg": 0.65,
+      "tap": 2000,
+      "hole": 800,
+      "margin": 22
+    },
+    "lathe": {
+      "setup": 25000,
+      "hourly": 52000,
+      "hoursPerKg": 0.45,
+      "tap": 1500,
+      "margin": 20
+    },
+    "profile": {
+      "base": 3000,
+      "perMeter": 13000,
+      "cut": 1000,
+      "tap": 1500,
+      "margin": 15
+    },
+    "print3d": {
+      "perCm3": 450,
+      "supportPercent": 15,
+      "margin": 28
+    },
+    "injection": {
+      "piece": 120,
+      "moldSimple": 0,
+      "moldNormal": 0,
+      "margin": 20
+    },
+    "welding": {
+      "base": 30000,
+      "point": 5000,
+      "margin": 22
+    },
+    "unknown": {
+      "margin": 0
+    }
   }
 }

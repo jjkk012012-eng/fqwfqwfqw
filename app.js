@@ -1323,3 +1323,315 @@ function renderRateEditors(){
   const pe=$('processEditor'); if(pe) pe.innerHTML=fields.map(([k,f,label])=>`<label class="rate-row"><span>${label}</span><input data-rate="process" data-key="${k}" data-field="${f}" type="number" value="${state.rates.process[k]?.[f]||0}"></label>`).join('');
   document.querySelectorAll('[data-rate]').forEach(inp=>inp.addEventListener('change',e=>{const{rate,key,field}=e.target.dataset;if(rate==='process'){state.rates.process[key]=state.rates.process[key]||{};state.rates.process[key][field]=Number(e.target.value)||0;}else{state.rates.materials[key][field]=Number(e.target.value)||0;}recalcAll();renderParts();renderSelected();}));
 }
+
+/* =========================
+   V15 공장장용 공정/원가 로직 개선
+   - 절곡 = 같은 두께 판재에서 큰 판면 패치끼리 만나는 긴 절곡선 클러스터 수
+   - 홀/탭 = 원형/타원형으로 보이는 compact feature loop 수
+   - 구매품 = 예상단가 자동 입력 후 공장이 수정
+   - 재료비 = kg/개 × 수량 × 재질별 시세/kg × 할증
+   - CNC = kg × kg당 예상시간 × 시간당 단가 + 셋업 + 홀/탭
+========================= */
+
+function estimateSheetFeaturesFromTriangles(pos, idx, metrics, totalArea){
+  const out = {bends:0, holes:0, debug:'', holeDebug:'', directionBends:0, patchBends:0, edgeBends:0, featureHoles:0};
+  try{
+    if(!pos || !idx || idx.length < 9 || !metrics) return out;
+    const minDim=Number(metrics.minDim)||0, midDim=Number(metrics.midDim)||0, maxDim=Number(metrics.maxDim)||0;
+    const isSheet = minDim>0 && minDim<=14 && maxDim/minDim>3.0 && midDim/minDim>1.12;
+    if(!isSheet) return out;
+    const normalInfo = collectPlaneDirections(pos, idx);
+    const edgeInfo = estimateFeatureEdgesForSheet(pos, idx, metrics);
+    const patchBends = estimateFlangePatchesV15(pos, idx, metrics, normalInfo);
+    // 방향 수는 보조 힌트. 절곡 수의 최종 기준은 edgeLine/patch이다.
+    const directionBends = Math.max(0, Math.min(12, normalInfo.significantCount - 1));
+    const edgeBends = edgeInfo.bends || 0;
+    // edge가 있으면 edge를 우선. 없으면 patch. direction은 둘 다 0일 때만 아주 보수적으로 사용.
+    let bends = edgeBends > 0 ? edgeBends : (patchBends > 0 ? patchBends : Math.min(directionBends, 4));
+    const holes = edgeInfo.holes || 0;
+    out.directionBends = directionBends;
+    out.patchBends = patchBends;
+    out.edgeBends = edgeBends;
+    out.featureHoles = holes;
+    out.bends = Math.max(0, Math.min(24, Math.round(bends)));
+    out.holes = Math.max(0, Math.min(200, Math.round(holes)));
+    out.debug = `V15 절곡선: edgeLine=${edgeBends}, flangePatch=${patchBends}, directionHint=${directionBends}`;
+    out.holeDebug = `V15 원형/타원 홀 loop=${holes}`;
+    return out;
+  }catch(e){ console.warn('V15 sheet feature estimate fail', e); return out; }
+}
+
+function estimateFeatureEdgesForSheet(pos, idx, metrics){
+  const res = {bends:0, holes:0, debug:''};
+  try{
+    const maxTris = Math.floor(idx.length/3);
+    if(maxTris <= 0 || maxTris > 170000) return res;
+    const minDim=Number(metrics.minDim)||1, maxDim=Number(metrics.maxDim)||100;
+    const vkey = (i) => `${Math.round(pos[i]*1000)/1000},${Math.round(pos[i+1]*1000)/1000},${Math.round(pos[i+2]*1000)/1000}`;
+    const vxyz = (s) => s.split(',').map(Number);
+    const triNormals=[];
+    const edges=new Map();
+    for(let t=0;t<maxTris;t++){
+      const va=idx[t*3]*3, vb=idx[t*3+1]*3, vc=idx[t*3+2]*3;
+      const ax=pos[va], ay=pos[va+1], az=pos[va+2], bx=pos[vb], by=pos[vb+1], bz=pos[vb+2], cx=pos[vc], cy=pos[vc+1], cz=pos[vc+2];
+      if(!Number.isFinite(ax+ay+az+bx+by+bz+cx+cy+cz)) continue;
+      const abx=bx-ax, aby=by-ay, abz=bz-az, acx=cx-ax, acy=cy-ay, acz=cz-az;
+      const nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+      const len=Math.hypot(nx,ny,nz); if(len<=1e-9) continue;
+      triNormals[t]=[nx/len,ny/len,nz/len];
+      const verts=[va,vb,vc].map(vkey);
+      for(const [a,b] of [[0,1],[1,2],[2,0]]){
+        const k = verts[a] < verts[b] ? `${verts[a]}|${verts[b]}` : `${verts[b]}|${verts[a]}`;
+        const e = edges.get(k)||{v1:verts[a],v2:verts[b],tris:[]}; e.tris.push(t); edges.set(k,e);
+      }
+    }
+    const feature=[];
+    for(const e of edges.values()){
+      if(e.tris.length===1){ feature.push({...e, boundary:true, hard:false}); continue; }
+      if(e.tris.length>=2){
+        const n1=triNormals[e.tris[0]], n2=triNormals[e.tris[1]]; if(!n1||!n2) continue;
+        const dot=Math.abs(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2]);
+        // 0.975 이상은 같은 평면/완만한 tessellation으로 보고 제외. 더 낮으면 접힘/홀/외곽 feature 후보.
+        if(dot < 0.975) feature.push({...e,boundary:false,hard:true,dot});
+      }
+    }
+    if(!feature.length) return res;
+    const vertToEdges=new Map();
+    feature.forEach((e,i)=>{ for(const v of [e.v1,e.v2]){ if(!vertToEdges.has(v)) vertToEdges.set(v,[]); vertToEdges.get(v).push(i);} });
+    const seen=new Set(), comps=[];
+    for(let i=0;i<feature.length;i++){
+      if(seen.has(i)) continue;
+      const stack=[i]; seen.add(i);
+      const c={edges:0,boundary:0,hard:0,minx:Infinity,maxx:-Infinity,miny:Infinity,maxy:-Infinity,minz:Infinity,maxz:-Infinity,verts:new Set(), samples:[]};
+      while(stack.length){
+        const ei=stack.pop(), e=feature[ei]; c.edges++; if(e.boundary)c.boundary++; if(e.hard)c.hard++;
+        for(const v of [e.v1,e.v2]){
+          c.verts.add(v); const [x,y,z]=vxyz(v); c.samples.push([x,y,z]);
+          c.minx=Math.min(c.minx,x); c.maxx=Math.max(c.maxx,x); c.miny=Math.min(c.miny,y); c.maxy=Math.max(c.maxy,y); c.minz=Math.min(c.minz,z); c.maxz=Math.max(c.maxz,z);
+          for(const ni of vertToEdges.get(v)||[]) if(!seen.has(ni)){seen.add(ni); stack.push(ni);}
+        }
+      }
+      const spans=[c.maxx-c.minx,c.maxy-c.miny,c.maxz-c.minz].sort((a,b)=>a-b);
+      c.spanMin=spans[0]||0; c.spanMid=spans[1]||0; c.spanMax=spans[2]||0;
+      const maxAxis = (c.maxx-c.minx >= c.maxy-c.miny && c.maxx-c.minx >= c.maxz-c.minz) ? 0 : ((c.maxy-c.miny >= c.maxz-c.minz) ? 1 : 2);
+      c.axis=maxAxis;
+      c.center=[(c.minx+c.maxx)/2,(c.miny+c.maxy)/2,(c.minz+c.maxz)/2];
+      comps.push(c);
+    }
+
+    const holeMax=Math.max(6, Math.min(120, Math.max(minDim*75, maxDim*0.10)));
+    const holes=comps.filter(c=>{
+      const compact=c.spanMax<=holeMax && c.spanMid<=holeMax;
+      const enough=c.edges>=6 || c.verts.size>=6;
+      const loopish=c.boundary>0 || c.hard>0;
+      const notOuter=c.spanMax < maxDim*0.23;
+      const notLong=c.spanMax/Math.max(1,c.spanMid) < 4.2;
+      return compact && enough && loopish && notOuter && notLong;
+    });
+    const holeSet=new Set(holes);
+    let rawBends=comps.filter(c=>{
+      if(holeSet.has(c)) return false;
+      const longEnough=c.spanMax>=Math.max(28, maxDim*0.055, minDim*12);
+      const mostlyHard=c.hard>=Math.max(2,c.edges*0.30);
+      const lineLike=c.spanMax/Math.max(1,c.spanMid)>=3.0 || c.spanMid <= Math.max(10,minDim*7);
+      const notOuterBoundary=c.boundary < c.edges*0.65;
+      // 너무 작은 귀/타공 주변 feature는 절곡선에서 제외한다.
+      const notSmallTab=c.spanMax >= maxDim*0.07;
+      return longEnough && mostlyHard && lineLike && notOuterBoundary && notSmallTab;
+    });
+    rawBends=mergeBendLineComponents(rawBends, minDim, maxDim);
+    res.holes=Math.min(200,holes.length);
+    res.bends=Math.min(24,rawBends.length);
+    res.debug=`V15 feature comps=${comps.length}, holes=${res.holes}, bendLines=${res.bends}`;
+    return res;
+  }catch(e){ console.warn('V15 feature edge estimate fail',e); return res; }
+}
+
+function mergeBendLineComponents(comps, minDim, maxDim){
+  if(comps.length<=1) return comps;
+  const tol=Math.max(6, Math.min(35, minDim*5));
+  const used=new Array(comps.length).fill(false);
+  const merged=[];
+  for(let i=0;i<comps.length;i++){
+    if(used[i]) continue;
+    used[i]=true;
+    const group=[comps[i]];
+    for(let j=i+1;j<comps.length;j++){
+      if(used[j]) continue;
+      const a=comps[i], b=comps[j];
+      if(a.axis!==b.axis) continue;
+      const other=[0,1,2].filter(x=>x!==a.axis);
+      const d=Math.hypot(a.center[other[0]]-b.center[other[0]], a.center[other[1]]-b.center[other[1]]);
+      const aMin=a.axis===0?a.minx:a.axis===1?a.miny:a.minz;
+      const aMax=a.axis===0?a.maxx:a.axis===1?a.maxy:a.maxz;
+      const bMin=b.axis===0?b.minx:b.axis===1?b.miny:b.minz;
+      const bMax=b.axis===0?b.maxx:b.axis===1?b.maxy:b.maxz;
+      const overlap=Math.max(0, Math.min(aMax,bMax)-Math.max(aMin,bMin));
+      const minLen=Math.min(a.spanMax,b.spanMax);
+      if(d<=tol && overlap>=minLen*0.35){ used[j]=true; group.push(b); }
+    }
+    // a bend radius can generate two close tangent edge lines. merged group counts as one bend.
+    merged.push(group[0]);
+  }
+  return merged;
+}
+
+function estimateFlangePatchesV15(pos, idx, metrics, normalInfo){
+  try{
+    const baseKey = normalInfo?.baseKey; if(!baseKey) return 0;
+    const minDim=Number(metrics.minDim)||1, maxDim=Number(metrics.maxDim)||100, areaAll=Number(metrics.surfaceAreaMm2)||1000;
+    const maxTris=Math.floor(idx.length/3); const step=Math.max(1, Math.floor(maxTris/60000));
+    const pts=[];
+    for(let t=0;t<maxTris;t+=step){
+      const ia=idx[t*3]*3, ib=idx[t*3+1]*3, ic=idx[t*3+2]*3;
+      const ax=pos[ia], ay=pos[ia+1], az=pos[ia+2], bx=pos[ib], by=pos[ib+1], bz=pos[ib+2], cx=pos[ic], cy=pos[ic+1], cz=pos[ic+2];
+      if(!Number.isFinite(ax+ay+az+bx+by+bz+cx+cy+cz)) continue;
+      const abx=bx-ax, aby=by-ay, abz=bz-az, acx=cx-ax, acy=cy-ay, acz=cz-az;
+      const nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+      const len=Math.hypot(nx,ny,nz); if(len<=1e-9) continue;
+      const ux=Math.abs(nx/len), uy=Math.abs(ny/len), uz=Math.abs(nz/len);
+      const key=`${Math.round(ux/0.07)}:${Math.round(uy/0.07)}:${Math.round(uz/0.07)}`;
+      if(key===baseKey) continue;
+      pts.push({x:(ax+bx+cx)/3,y:(ay+by+cy)/3,z:(az+bz+cz)/3,area:(len/2)*step,key});
+    }
+    if(!pts.length) return 0;
+    const eps=Math.max(8, Math.min(60, Math.max(minDim*11, maxDim*0.028)));
+    const parent=Array.from({length:pts.length},(_,i)=>i);
+    const find=i=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i];}return i};
+    const unite=(a,b)=>{const ra=find(a),rb=find(b);if(ra!==rb)parent[rb]=ra};
+    const grid=new Map();
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i], gx=Math.floor(p.x/eps), gy=Math.floor(p.y/eps), gz=Math.floor(p.z/eps);
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(let dz=-1;dz<=1;dz++){
+        const arr=grid.get(`${gx+dx}:${gy+dy}:${gz+dz}`)||[];
+        for(const j of arr){ const q=pts[j]; if(p.key===q.key && Math.hypot(p.x-q.x,p.y-q.y,p.z-q.z)<=eps) unite(i,j); }
+      }
+      const k=`${gx}:${gy}:${gz}`; if(!grid.has(k))grid.set(k,[]); grid.get(k).push(i);
+    }
+    const comps=new Map();
+    for(let i=0;i<pts.length;i++){
+      const r=find(i), p=pts[i]; const c=comps.get(r)||{area:0,count:0,minx:Infinity,maxx:-Infinity,miny:Infinity,maxy:-Infinity,minz:Infinity,maxz:-Infinity};
+      c.area+=p.area; c.count++; c.minx=Math.min(c.minx,p.x); c.maxx=Math.max(c.maxx,p.x); c.miny=Math.min(c.miny,p.y); c.maxy=Math.max(c.maxy,p.y); c.minz=Math.min(c.minz,p.z); c.maxz=Math.max(c.maxz,p.z); comps.set(r,c);
+    }
+    const candidates=[...comps.values()].filter(c=>{
+      const spans=[c.maxx-c.minx,c.maxy-c.miny,c.maxz-c.minz].sort((a,b)=>a-b);
+      const long=spans[2] >= Math.max(30, minDim*10, maxDim*0.065);
+      const enoughArea=c.area >= Math.max(40, areaAll*0.0012);
+      const notTiny=c.count>=5;
+      const notHoleLike=spans[2]/Math.max(1,spans[1])>=2.2 || spans[2] > maxDim*0.14;
+      return long && enoughArea && notTiny && notHoleLike;
+    });
+    return Math.min(24,candidates.length);
+  }catch(e){console.warn('V15 flange patch fail', e); return 0;}
+}
+
+function deriveFeatures(name, metrics){
+  const n = String(name||'').toUpperCase();
+  const preset = presetByPartName(n);
+  const tMatch = n.match(/(?:^|[-_\s])(\d+(?:\.\d+)?)\s*T(?:$|[-_\s])|(?:^|[-_\s])T\s*(\d+(?:\.\d+)?)(?:$|[-_\s])/);
+  const tName = tMatch ? Number(tMatch[1]||tMatch[2]) : 0;
+  const m = metrics || {};
+  const minDim=Number(m.minDim)||0, midDim=Number(m.midDim)||0, maxDim=Number(m.maxDim)||0;
+  const solidness=Number(m.solidness)||0, majorPlaneDirections=Number(m.majorPlaneDirections)||0, normalClusterCount=Number(m.normalClusterCount)||0;
+  const flatPlateLike=Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>6.5 && midDim/minDim>2.0));
+  const shellLike=Boolean(flatPlateLike || (solidness>0 && solidness<0.28 && maxDim>45 && minDim>0 && maxDim/minDim>3.3));
+  const cylinderLike=Boolean(m.cylinderLike);
+  const purchaseName=preset.forcePurchase;
+  const sheetNameHint=preset.forceSheet || /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
+  const bendNameHint=/BEND|BENT|FOLD|FLANGE|절곡|L[-_ ]?BRACKET|U[-_ ]?BRACKET|ㄱ|ㄷ/.test(n);
+  const thickByName=tName>=10;
+  const sheetGeometry = preset.forceSheet || ((flatPlateLike || shellLike || (sheetNameHint && minDim>0 && minDim<=10)) && minDim>0 && minDim<=14 && !cylinderLike && !thickByName && !purchaseName);
+  let thickness = preset.thickness || tName || (sheetGeometry && minDim>0 ? round1(Math.min(minDim, 6)) : (sheetNameHint ? 1.5 : 8));
+
+  const edgeBends=Number(m.edgeBendCount)||0, patchBends=Number(m.patchBendCount)||0, directionBends=Number(m.directionBendCount)||0;
+  let bends=0;
+  if(sheetGeometry && edgeBends>0) bends=edgeBends;
+  else if(sheetGeometry && patchBends>0) bends=patchBends;
+  else if(sheetGeometry && bendNameHint) bends=Math.max(1, Math.min(6, majorPlaneDirections-1));
+  else if(sheetGeometry && majorPlaneDirections>=2) bends=Math.max(1, Math.min(5, majorPlaneDirections-1));
+  else if(sheetGeometry && preset.bends!=null) bends=preset.bends;
+  if(/U[-_ ]?BRACKET|UBRACKET|ㄷ/.test(n)) bends=Math.max(bends,2);
+  if(/L[-_ ]?BRACKET|LBRACKET|ㄱ/.test(n)) bends=Math.max(bends,1);
+  bends=Math.max(0,Math.min(24,Math.round(bends)));
+
+  let holes=0;
+  if(!purchaseName){
+    holes=Math.max(Number(m.featureHoleCount)||0, Number(m.holeCandidateCount)||0);
+    if(holes===0 && /TAP|M\d+/.test(n)) holes=1;
+    if(holes===0 && sheetGeometry && normalClusterCount>=14) holes=Math.min(32, Math.round((normalClusterCount-10)/2));
+  }
+  holes=Math.max(0,Math.min(200,Math.round(holes)));
+  const materialHint = preset.material || defaultMaterial(sheetGeometry?'sheet':'cnc', n);
+  const density = (state.rates?.materials?.[materialHint]?.density) || 2.7;
+  const volumeMm3=Number(m.volumeMm3)||0;
+  const autoWeightKg = volumeMm3>0 ? Math.max(0.001, (volumeMm3*density)/1000000) : fallbackWeightKg(sheetGeometry?'sheet':'cnc', thickness, maxDim);
+  const bendDebug=bends>0?`절곡선 후보 ${bends}회: edgeLine=${edgeBends}, flangePatch=${patchBends}, directionHint=${directionBends}`:'절곡 후보 없음';
+  const holeDebug=purchaseName?'구매품은 홀/탭 자동 0':(holes>0?`원형/타원 홀 후보 ${holes}개: loop=${m.featureHoleCount||0}, compact=${m.holeCandidateCount||0}`:'홀 후보 없음');
+  const cncComplexity = Math.max(1, Math.min(2.2, 1 + (Number(m.normalComplexity)||0)*0.55 + (holes>6?0.15:0) + (solidness<0.18 && !sheetGeometry ? 0.20:0)));
+  return {metrics:m,tName,thickness,minDim,midDim,maxDim,solidness,flatPlateLike,shellLike,cylinderLike,normalClusterCount,majorPlaneDirections,bendNameHint,sheetNameHint,thickByName,bends,taps:holes,sheetGeometry,patchBends,directionBends,edgeBends,holeDebug,bendDebug,presetNote:preset.note,forceSheet:preset.forceSheet,forcePurchase:preset.forcePurchase,presetMaterial:preset.material,autoWeightKg,cncComplexity};
+}
+
+function calcQuote(p){
+  const q=Math.max(0,Number(p.quantity)||0); const pr=state.rates.process[p.process]||state.rates.process.unknown; if(p.process==='unknown') return 0;
+  let procCost=0, matCost=0;
+  const material=state.rates.materials[p.material]||state.rates.materials.AL6061;
+  const materialRate=(Number(material.market)||0)*(1+(Number(material.markupPercent)||0)/100);
+  const maxDim=Number(p.features?.maxDim)||0; const volCm3=(Number(p.features?.metrics?.volumeMm3)||0)/1000;
+  if(p.process==='purchase'){
+    procCost=(Number(p.purchaseUnit)||0)*q;
+  } else {
+    matCost=(Number(p.weightKg)||0)*materialRate*q;
+    if(p.process==='sheet'){
+      const thicknessFactor=(Number(p.thickness)||1.5)>3.2?1.5:((Number(p.thickness)||1.5)>1.6?1.2:1);
+      const lengthFactor=maxDim>1200?1.8:(maxDim>800?1.45:(maxDim>450?1.2:1));
+      procCost=((pr.setup||0) + ((pr.pieceBase||0)*q) + (Number(p.bends)||0)*(pr.bend||0)*thicknessFactor*lengthFactor + (Number(p.taps)||0)*(pr.hole||0))*1;
+    } else if(p.process==='cnc'){
+      const hoursPerKg=Number(pr.hoursPerKg)||0.65; const hourly=Number(pr.hourly)||60000; const complexity=Number(p.features?.cncComplexity)||1;
+      const hours=(Number(p.weightKg)||0)*q*hoursPerKg*complexity;
+      procCost=(pr.setup||0) + hours*hourly + (Number(p.taps)||0)*(pr.tap||pr.hole||0)*q;
+    } else if(p.process==='lathe'){
+      const hours=(Number(p.weightKg)||0)*q*(Number(pr.hoursPerKg)||0.45);
+      procCost=(pr.setup||0) + hours*(Number(pr.hourly)||52000) + (Number(p.taps)||0)*(pr.tap||0)*q;
+    } else if(p.process==='profile'){
+      procCost=((pr.base||0)+Math.max(0.1,(maxDim||600)/1000)*(pr.perMeter||0)+(pr.cut||0)*2+(Number(p.taps)||0)*(pr.tap||0))*q;
+    } else if(p.process==='print3d'){
+      procCost=((pr.perCm3||0)*Math.max(20,volCm3))*q;
+    } else if(p.process==='injection'){
+      procCost=((pr.piece||0)*q);
+    } else if(p.process==='welding'){
+      procCost=((pr.base||0))*q;
+    }
+  }
+  return Math.round((matCost+procCost)*(1+(Number(p.margin)||0)/100));
+}
+
+function renderRateEditors(){
+  $('marginEditor').innerHTML=Object.entries(state.rates.process).map(([k,v])=>`<label class="rate-row"><span>${esc(PROCESS_LABELS[k]||k)}</span><input data-rate="process" data-key="${k}" data-field="margin" type="number" value="${v.margin||0}"></label>`).join('');
+  $('materialEditor').innerHTML=Object.entries(state.rates.materials).map(([k,v])=>`<label class="rate-row"><span>${esc(k)} 시세/kg</span><input data-rate="material" data-key="${k}" data-field="market" type="number" value="${v.market||0}"></label><label class="rate-row"><span>${esc(k)} 할증%</span><input data-rate="material" data-key="${k}" data-field="markupPercent" type="number" value="${v.markupPercent||0}"></label><label class="rate-row"><span>${esc(k)} 밀도 g/cm³</span><input data-rate="material" data-key="${k}" data-field="density" type="number" step="0.01" value="${v.density||0}"></label>`).join('');
+  const fields=[
+    ['sheet','setup','판금 셋업'],['sheet','pieceBase','판금 기본/개'],['sheet','bend','절곡 1회'],['sheet','hole','홀/타공 1개'],
+    ['cnc','setup','CNC 셋업'],['cnc','hourly','CNC 시간당'],['cnc','hoursPerKg','CNC kg당 시간'],['cnc','tap','CNC 홀/탭 1개'],
+    ['lathe','setup','선반 셋업'],['lathe','hourly','선반 시간당'],['lathe','hoursPerKg','선반 kg당 시간'],['lathe','tap','선반 탭 1개'],
+    ['profile','perMeter','프로파일 m당'],['profile','cut','프로파일 절단'],['profile','tap','프로파일 탭'],
+    ['print3d','perCm3','3D cm³당'],['welding','base','용접 기본']
+  ];
+  const pe=$('processEditor'); if(pe) pe.innerHTML=fields.map(([k,f,label])=>`<label class="rate-row"><span>${label}</span><input data-rate="process" data-key="${k}" data-field="${f}" type="number" step="0.01" value="${state.rates.process[k]?.[f]??0}"></label>`).join('');
+  document.querySelectorAll('[data-rate]').forEach(inp=>inp.addEventListener('change',e=>{const{rate,key,field}=e.target.dataset;if(rate==='process'){state.rates.process[key]=state.rates.process[key]||{};state.rates.process[key][field]=Number(e.target.value)||0;}else{state.rates.materials[key][field]=Number(e.target.value)||0;}recalcAll();renderParts();renderSelected();}));
+}
+
+function renderSelected(){
+  const p=state.parts.find(x=>x.id===state.selectedId); const panel=$('selectedPanel');
+  if(!p){ panel.innerHTML='<h2>선택 파트 검토</h2><p class="muted">파트를 선택하세요.</p>'; return; }
+  const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
+  const material=state.rates.materials[p.material]||state.rates.materials.AL6061; const matRate=Math.round((material.market||0)*(1+(material.markupPercent||0)/100));
+  const matCost=p.process==='purchase'?0:Math.round((Number(p.weightKg)||0)*matRate*(Number(p.quantity)||0));
+  const cncHours = p.process==='cnc' ? ((Number(p.weightKg)||0)*(Number(p.quantity)||0)*(Number(state.rates.process.cnc.hoursPerKg)||0.65)*(Number(p.features?.cncComplexity)||1)).toFixed(2) : null;
+  panel.innerHTML=`<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3>
+    <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">${esc(p.confidence)}</span></div>
+    <div class="quick-actions">
+      <button onclick="quickSetPart('sheet3')">판금 3절곡</button><button onclick="quickSetPart('sheet4')">판금 4절곡</button><button onclick="quickSetPart('purchase')">구매품</button><button onclick="quickSetPart('cnc')">CNC</button>
+      <button onclick="quickSetPart('holeMinus')">홀-</button><button onclick="quickSetPart('holePlus')">홀+</button><button onclick="quickSetPart('bendMinus')">절곡-</button><button onclick="quickSetPart('bendPlus')">절곡+</button>
+    </div>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims||'-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 큰 판면방향: ${m.majorPlaneDirections||0}<br>절곡선 분석: edgeLine ${m.edgeBendCount||0} · flangePatch ${m.patchBendCount||0} · directionHint ${m.directionBendCount||0} → 적용 ${p.bends}<br>홀 분석: 원형/타원 loop ${m.featureHoleCount||0} · compact ${m.holeCandidateCount||0} → 적용 ${p.taps}<br>중량 ${p.weightKg}kg/개 · 재료단가 ${won(matRate)}/kg · 재료비 ${won(matCost)}${cncHours?`<br>CNC 예상시간: ${cncHours}h = kg/개 × 수량 × kg당시간 × 복잡도`:''}<br>${p.process==='purchase'?'구매 예상단가 '+won(p.purchaseUnit)+' / 수정 가능<br>':''}${p.features?.presetNote?'기본규칙: '+esc(p.features.presetNote)+'<br>':''}${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}</p>
+    <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
+}
