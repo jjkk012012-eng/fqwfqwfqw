@@ -317,11 +317,28 @@ function buildThreeMeshes(meshes){
   });
 }
 function color(i){return [0x92b4ff,0x9cf6d0,0xffd166,0xffaaa5,0xc4b5fd,0x93c5fd,0xfcd34d,0xa7f3d0][i%8];}
-function showAllMeshes(){
-  state.meshObjects.forEach(o=>o.group.visible=true);
-  fitCamera(false);
+function clearFocusClone(){
+  const root = state.three.root;
+  if(state.focusClone && root){
+    root.remove(state.focusClone);
+    state.focusClone.traverse(o=>{
+      if(o.geometry && o.geometry.dispose) o.geometry.dispose();
+      if(o.material && o.material.dispose) o.material.dispose();
+    });
+  }
+  state.focusClone = null;
 }
-function hideAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=false); }
+function showAllMeshes(){
+  clearFocusClone();
+  state.meshObjects.forEach(o=>o.group.visible=false);
+  // 어셈블리 전체보기는 서비스 화면에서 쓰지 않는다. 첫 파트만 크게 표시.
+  const first = state.parts.find(p=>p.meshIndex!=null) || state.parts[0];
+  if(first) showPart(first);
+}
+function hideAllMeshes(){
+  clearFocusClone();
+  state.meshObjects.forEach(o=>o.group.visible=false);
+}
 function meshGroupForPart(part){
   if(!part) return null;
   if(part.meshIndex!=null && state.meshObjects[part.meshIndex]) return state.meshObjects[part.meshIndex].group;
@@ -331,9 +348,11 @@ function meshGroupForPart(part){
   }
   const pn=norm(part.meshName || part.name);
   if(pn){
+    // 1) 정확/부분 이름 매칭
     for(const o of state.meshObjects){
       if(!isNumberishMesh(o.name) && (o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm))) return o.group;
     }
+    // 2) 숫자 토큰 매칭
     const pNums=numberTokens(part.name);
     if(pNums.length){
       for(const o of state.meshObjects){
@@ -342,25 +361,67 @@ function meshGroupForPart(part){
       }
     }
   }
+  // 3) 사전에 할당한 fallback mesh
   if(part.fallbackMeshIndex!=null && state.meshObjects[part.fallbackMeshIndex]) return state.meshObjects[part.fallbackMeshIndex].group;
+  // 4) 행 순서 기반 fallback: 구매품이라도 STEP에 형상이 있으면 일단 보여준다.
   const rowIndex=state.parts.findIndex(x=>x.id===part.id);
   if(rowIndex>=0 && state.meshObjects[rowIndex]) return state.meshObjects[rowIndex].group;
-  return state.meshObjects[0]?.group || null;
+  return null;
+}
+function makeFocusedClone(srcGroup, part){
+  const clone = srcGroup.clone(true);
+  clone.name = 'focus_' + (part?.name || srcGroup.name || 'part');
+  clone.visible = true;
+  clone.traverse(o=>{
+    o.visible = true;
+    if(o.isMesh){
+      o.material = new THREE.MeshPhongMaterial({color:0x9be7ff, shininess:28, side:THREE.DoubleSide});
+      if(o.geometry && !o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    }
+    if(o.isLineSegments){
+      o.material = new THREE.LineBasicMaterial({color:0x06111f, transparent:true, opacity:.55});
+    }
+  });
+  clone.updateWorldMatrix(true,true);
+  const box = new THREE.Box3().setFromObject(clone);
+  if(Number.isFinite(box.min.x)){
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const maxDim = Math.max(size.x, size.y, size.z, 1);
+    const target = 180; // 볼트/너트 같은 소형 구매품도 항상 화면에 크게 보이게 정규화
+    const scale = target / maxDim;
+    // STEP 원좌표가 어셈블리 위치 기준이어도, 선택 파트는 원점 중심으로 옮겨서 크게 보여준다.
+    clone.position.x -= center.x;
+    clone.position.y -= center.y;
+    clone.position.z -= center.z;
+    clone.scale.setScalar(scale);
+    clone.userData.normalizedScale = scale;
+  }
+  return clone;
 }
 function showPart(part){
-  if(!part) return;
+  clearFocusClone();
   state.meshObjects.forEach(o=>o.group.visible=false);
-  const g=meshGroupForPart(part);
-  if(g){
-    g.visible=true;
+  const root = state.three.root;
+  if(!part || !root) return;
+  const src = meshGroupForPart(part);
+  if(src){
+    const focus = makeFocusedClone(src, part);
+    state.focusClone = focus;
+    root.add(focus);
     fitCamera(true);
     return;
   }
-  const root=state.three.root;
-  if(root && window.THREE){
-    const geom=new THREE.BoxGeometry(40,40,40);
+  // 정말 mesh가 없을 때만 단순 프록시를 보여준다. 견적표에는 남겨서 단가 입력 가능.
+  if(window.THREE){
+    const geom=new THREE.BoxGeometry(90,50,30);
     const mat=new THREE.MeshPhongMaterial({color:0x9ca3af,shininess:10});
-    const proxy=new THREE.Group(); proxy.name='proxy-'+part.name; proxy.add(new THREE.Mesh(geom,mat)); root.add(proxy); proxy.visible=true;
+    const proxy=new THREE.Group();
+    proxy.name='proxy-'+part.name;
+    proxy.add(new THREE.Mesh(geom,mat));
+    proxy.visible=true;
+    state.focusClone=proxy;
+    root.add(proxy);
     fitCamera(true);
   }
 }
@@ -389,13 +450,15 @@ function fitCamera(visibleOnly=false){
   const size=new THREE.Vector3(); box.getSize(size);
   const center=new THREE.Vector3(); box.getCenter(center);
   const maxDim=Math.max(size.x,size.y,size.z,1);
-  const dist=Math.max(maxDim*2.3, 12);
-  camera.position.set(center.x+dist, center.y+dist*.8, center.z+dist);
-  camera.near=Math.max(maxDim/2000,0.01);
-  camera.far=Math.max(maxDim*60,1000);
+  const fov = camera.fov * Math.PI / 180;
+  const dist = Math.max((maxDim/2) / Math.tan(fov/2) * 1.45, 20);
+  camera.position.set(center.x+dist, center.y+dist*.72, center.z+dist*.58);
+  camera.near=Math.max(maxDim/5000,0.01);
+  camera.far=Math.max(maxDim*80,2000);
   camera.updateProjectionMatrix();
   if(controls){ controls.target.copy(center); controls.update(); }
 }
+
 
 async function handleFile(file){
   state.fileName=file.name; state.parts=[]; state.selectedId=null; resetScene();
@@ -704,10 +767,25 @@ function defaultMaterial(process,name){
   return 'AL6061';
 }
 function estimateKg(p,mat){
+  // 예상무게는 '형상 체적 × 선택 재질 밀도'로 계산한다.
+  // 재질을 바꾸면 같은 파트라도 AL/SUS/플라스틱별 무게가 즉시 달라져야 한다.
+  const density = Number(state.rates.materials?.[mat]?.density) || 1;
+  const volumeCm3 = estimateVolumeCm3(p);
+  return round(Math.max(0.001, volumeCm3 * density / 1000), 3);
+}
+function estimateVolumeCm3(p){
   const m=p.metrics;
-  if(m?.volume){ const d=state.rates.materials[mat]?.density||1; return round(Math.max(.001,m.volume/1000*d/1000),3); }
-  const n=p.name.toUpperCase();
-  if(/BOLT|SCREW/.test(n))return .004; if(/NUT/.test(n))return .03; if(/VALVE|NIPPLE/.test(n))return .04; if(/12T/.test(n))return .044; if(/HOOD|COVER|BODY|SKEL/.test(n))return .25; return .05;
+  // OCCT mesh volume은 mm³ 기준으로 계산되어 있으므로 cm³로 변환한다.
+  if(m?.volume && Number.isFinite(m.volume) && m.volume>0) return Math.max(0.001, m.volume/1000);
+  // mesh volume이 없을 때만 이름 기반 체적 추정값을 사용한다. 이 값도 재질 밀도와 곱해 무게가 달라진다.
+  const n=String(p.name||'').toUpperCase();
+  if(/BOLT|SCREW/.test(n)) return 0.5;
+  if(/HEX[_-]?NUT|NUT/.test(n)) return 3.8;
+  if(/VALVE|NIPPLE|FITTING|PIPE|TUBE|PIE/.test(n)) return 5.2;
+  if(/12T/.test(n)) return 16.5;
+  if(/HOOD|COVER|BODY|SKEL|PANEL|SHEET/.test(n)) return 31.5;
+  if(/PROFILE|FRAME|4040|3030|2020/.test(n)) return 42;
+  return 8;
 }
 function estimatePurchaseUnit(name){
   const u=String(name).toUpperCase();
@@ -787,6 +865,12 @@ function onPartEdit(e){
     if(p.process==='purchase' && !p.purchaseUnit) p.purchaseUnit=estimatePurchaseUnit(p.name);
     if(p.process!=='sheet') p.bends=0;
     if(!usesTime(p.process)) p.timePerEa=0;
+    // 공법 변경 후에도 선택 재질 기준 예상무게는 다시 계산한다.
+    p.kgPerEa=estimateKg(p,p.material);
+  }
+  if(f==='material'){
+    // 핵심 수정: 재질 변경 시 예상무게를 선택 재질 밀도로 즉시 재계산한다.
+    p.kgPerEa=estimateKg(p,p.material);
   }
   calcPart(p); renderParts(); renderSelected(); updateStats();
 }
@@ -795,7 +879,7 @@ function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId);
   const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금/절곡: 절곡수만 입력':usesTime(p.process)?`${PROCESS_LABELS[p.process]}: 시간/개 입력`:p.process==='purchase'?'구매품: 구매단가 입력':p.process==='profile'?'압출: 가공비 단가표 적용':'공법 선택 필요';
   const top=(p.classInfo?.top||[]).slice(0,4).map(([k,v])=>`<li>${PROCESS_LABELS[k]} ${v}</li>`).join('');
   el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName?('mesh: '+p.meshName+(p.matchType==='추정'?' · 추정 매칭':'')):'형상 표시 대기')}</p>
-  <div class="selected-grid"><div><b>추천</b><br>${PROCESS_LABELS[p.process]} / ${esc(p.classInfo?.confidence||'확인 필요')}</div><div><b>수량</b><br>${p.qty}</div><div><b>입력 기준</b><br>${mode}</div><div><b>예상 무게</b><br>${p.kgPerEa}kg/개</div></div>
+  <div class="selected-grid"><div><b>추천</b><br>${PROCESS_LABELS[p.process]} / ${esc(p.classInfo?.confidence||'확인 필요')}</div><div><b>수량</b><br>${p.qty}</div><div><b>입력 기준</b><br>${mode}</div><div><b>예상 무게</b><br>${p.kgPerEa}kg/개<br><span class="muted-small">${esc(p.material)} 밀도 반영</span></div></div>
   <div class="service-note"><b>추천 근거</b><br>${esc((p.classInfo?.reasons||[]).join(' / ')||'자동 근거 부족')}</div>
   <ul class="score-list">${top}</ul>
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
@@ -805,7 +889,14 @@ function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId);
   el.querySelectorAll('button[data-quick]').forEach(btn=>btn.addEventListener('click',()=>quickEdit(p,btn.dataset.quick)));
 }
 function quickEdit(p,cmd){
-  if(PROCESSES.includes(cmd)){ p.process=cmd; p.margin=state.rates.process[cmd]?.margin??p.margin; if(cmd==='purchase'&&!p.purchaseUnit)p.purchaseUnit=estimatePurchaseUnit(p.name); if(cmd!=='sheet')p.bends=0; if(!usesTime(cmd))p.timePerEa=0; }
+  if(PROCESSES.includes(cmd)){
+    p.process=cmd;
+    p.margin=state.rates.process[cmd]?.margin??p.margin;
+    if(cmd==='purchase'&&!p.purchaseUnit)p.purchaseUnit=estimatePurchaseUnit(p.name);
+    if(cmd!=='sheet')p.bends=0;
+    if(!usesTime(cmd))p.timePerEa=0;
+    p.kgPerEa=estimateKg(p,p.material);
+  }
     calcPart(p); renderParts(); renderSelected(); updateStats();
 }
 
