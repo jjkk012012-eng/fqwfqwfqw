@@ -313,29 +313,55 @@ function buildThreeMeshes(meshes){
   });
 }
 function color(i){return [0x92b4ff,0x9cf6d0,0xffd166,0xffaaa5,0xc4b5fd,0x93c5fd,0xfcd34d,0xa7f3d0][i%8];}
-function showAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=true); state.selectedId=null; fitCamera(false); }
+function showAllMeshes(){
+  state.meshObjects.forEach(o=>o.group.visible=true);
+  fitCamera(false);
+}
 function hideAllMeshes(){ state.meshObjects.forEach(o=>o.group.visible=false); }
+function meshGroupForPart(part){
+  if(!part) return null;
+  if(part.meshIndex!=null && state.meshObjects[part.meshIndex]) return state.meshObjects[part.meshIndex].group;
+  if(part.meshNorm){
+    const g=state.meshByNorm.get(part.meshNorm);
+    if(g) return g;
+  }
+  const pn=norm(part.meshName || part.name);
+  if(pn){
+    for(const o of state.meshObjects){
+      if(!isNumberishMesh(o.name) && (o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm))) return o.group;
+    }
+    const pNums=numberTokens(part.name);
+    if(pNums.length){
+      for(const o of state.meshObjects){
+        const mNums=numberTokens(o.name);
+        if(mNums.some(x=>pNums.includes(x))) return o.group;
+      }
+    }
+  }
+  if(part.fallbackMeshIndex!=null && state.meshObjects[part.fallbackMeshIndex]) return state.meshObjects[part.fallbackMeshIndex].group;
+  const rowIndex=state.parts.findIndex(x=>x.id===part.id);
+  if(rowIndex>=0 && state.meshObjects[rowIndex]) return state.meshObjects[rowIndex].group;
+  return state.meshObjects[0]?.group || null;
+}
 function showPart(part){
   if(!part) return;
   state.meshObjects.forEach(o=>o.group.visible=false);
-  let shown=false;
-  if(part.meshIndex!=null && state.meshObjects[part.meshIndex]){ state.meshObjects[part.meshIndex].group.visible=true; shown=true; }
-  if(!shown && part.meshNorm){
-    const g=state.meshByNorm.get(part.meshNorm);
-    if(g){ g.visible=true; shown=true; }
-  }
-  if(!shown && part.meshName && !isNumberishMesh(part.meshName)){
-    const pn=norm(part.meshName);
-    for(const o of state.meshObjects){
-      if(!isNumberishMesh(o.name) && (o.norm===pn || o.norm.includes(pn) || pn.includes(o.norm))){ o.group.visible=true; shown=true; break; }
-    }
-  }
-  if(!shown){
-    hideAllMeshes();
-    setMessage('warn', `${part.name} 형상 매칭 없음: 어셈블리 전체는 표시하지 않고 견적표만 사용합니다.`);
+  const g=meshGroupForPart(part);
+  if(g){
+    g.visible=true;
+    fitCamera(true);
     return;
   }
-  fitCamera(true);
+  const root=state.three.root;
+  if(root && window.THREE){
+    const geom=new THREE.BoxGeometry(40,40,40);
+    const mat=new THREE.MeshPhongMaterial({color:0x9ca3af,shininess:10});
+    const proxy=new THREE.Group(); proxy.name='proxy-'+part.name; proxy.add(new THREE.Mesh(geom,mat)); root.add(proxy); proxy.visible=true;
+    fitCamera(true);
+  }
+}
+function numberTokens(s){
+  return (String(s||'').match(/\d+/g)||[]).map(x=>String(Number(x))).filter(x=>x && x!=='NaN');
 }
 function visibleSceneBox(root){
   const box=new THREE.Box3();
@@ -351,20 +377,18 @@ function visibleSceneBox(root){
   return {box,has};
 }
 function fitCamera(visibleOnly=false){
-  const {root,camera,controls}=state.three; if(!root||!camera)return;
+  const {root,camera,controls}=state.three; if(!root||!camera||!window.THREE)return;
   let box, has;
   if(visibleOnly) ({box,has}=visibleSceneBox(root));
   else { box=new THREE.Box3().setFromObject(root); has=Number.isFinite(box.min.x); }
   if(!has || !Number.isFinite(box.min.x)) return;
   const size=new THREE.Vector3(); box.getSize(size);
   const center=new THREE.Vector3(); box.getCenter(center);
-  const radius=Math.max(size.x,size.y,size.z,1) * 0.5;
-  const fov=(camera.fov||45) * Math.PI / 180;
-  const distance=Math.max(radius / Math.tan(fov/2) * 1.15, 2);
-  const dir=new THREE.Vector3(1.15,1.25,0.9).normalize();
-  camera.position.copy(center).add(dir.multiplyScalar(distance));
-  camera.near=Math.max(distance/3000,0.001);
-  camera.far=Math.max(distance*250,1000);
+  const maxDim=Math.max(size.x,size.y,size.z,1);
+  const dist=Math.max(maxDim*2.3, 12);
+  camera.position.set(center.x+dist, center.y+dist*.8, center.z+dist);
+  camera.near=Math.max(maxDim/2000,0.01);
+  camera.far=Math.max(maxDim*60,1000);
   camera.updateProjectionMatrix();
   if(controls){ controls.target.copy(center); controls.update(); }
 }
@@ -438,40 +462,65 @@ function groupByName(rows){ const map=new Map(); for(const r of rows){ const key
 
 function makeParts(textInfo, meshes){
   // 견적표는 STEP 텍스트에서 얻은 실제 말단 PRODUCT만 사용한다.
-  // OCCT mesh는 뷰어 매칭용으로만 쓰고, MESH_41 같은 일반 mesh 이름은 표에 추가하지 않는다.
+  // 3D mesh는 표시용으로 최대한 매칭한다. 정확 매칭이 안 되면 순서/번호 기반으로 추정 매칭해서, 파트 클릭 시 형상을 보여준다.
   const meshList=state.meshObjects.map((o,i)=>({name:o.name||`MESH_${i+1}`, norm:o.norm||norm(o.name||''), metrics:o.metrics, index:i}));
   const usableMeshes=meshList.filter(m=>!isAssemblyName(m.name));
-  const result=[];
+  const raw=[];
   for(const p of textInfo.parts){
     if(isBadName(p.name) || isAssemblyName(p.name)) continue;
-    const pn=norm(p.name);
-    let mesh=usableMeshes.find(m=>m.norm===pn);
-    if(!mesh){
-      mesh=usableMeshes.find(m=>!isBadName(m.name) && pn.length>4 && m.norm.includes(pn));
-    }
-    if(!mesh){
-      mesh=usableMeshes.find(m=>!isBadName(m.name) && m.norm.length>4 && pn.includes(m.norm));
-    }
-    result.push({...p, meshName:mesh?.name||'', meshNorm:mesh?.norm||'', metrics:mesh?.metrics||null, meshIndex:mesh?.index});
+    const mesh=bestMeshForPart(p.name, usableMeshes, new Set());
+    raw.push({...p, meshName:mesh?.name||'', meshNorm:mesh?.norm||'', metrics:mesh?.metrics||null, meshIndex:mesh?.index, matchType:mesh?'name':''});
   }
-  // 텍스트에서 파트명이 아예 없을 때만 mesh를 fallback으로 사용한다.
-  if(!result.length){
+  // 텍스트 파트명이 없을 때만 mesh 자체를 파트로 쓴다.
+  if(!raw.length){
     for(const m of usableMeshes){
       if(isBadName(m.name) || isAssemblyName(m.name)) continue;
-      result.push({name:m.name, qty:1, source:'3D mesh fallback', meshName:m.name, meshNorm:m.norm, metrics:m.metrics, meshIndex:m.index});
+      raw.push({name:m.name, qty:1, source:'3D mesh', meshName:m.name, meshNorm:m.norm, metrics:m.metrics, meshIndex:m.index, matchType:'mesh'});
     }
   }
   const grouped=new Map();
-  for(const r of result){
+  for(const r of raw){
     const key=dedupeKey(r.name);
     if(!key) continue;
     if(!grouped.has(key)) grouped.set(key,{...r, qty:0});
     const g=grouped.get(key);
     g.qty += Math.max(1,num(r.qty,1));
-    if(!g.meshName && r.meshName){ g.meshName=r.meshName; g.meshNorm=r.meshNorm; g.metrics=r.metrics; g.meshIndex=r.meshIndex; }
+    if(!g.meshName && r.meshName){ g.meshName=r.meshName; g.meshNorm=r.meshNorm; g.metrics=r.metrics; g.meshIndex=r.meshIndex; g.matchType=r.matchType; }
   }
-  return [...grouped.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  const arr=[...grouped.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  assignFallbackMeshes(arr, usableMeshes);
+  return arr;
 }
+function bestMeshForPart(name, meshes, used){
+  const pn=norm(name); if(!pn) return null;
+  let c=meshes.find(m=>!used.has(m.index) && m.norm===pn); if(c) return c;
+  c=meshes.find(m=>!used.has(m.index) && !isNumberishMesh(m.name) && pn.length>3 && (m.norm.includes(pn)||pn.includes(m.norm))); if(c) return c;
+  const pNums=numberTokens(name);
+  if(pNums.length){
+    c=meshes.find(m=>!used.has(m.index) && numberTokens(m.name).some(x=>pNums.includes(x))); if(c) return c;
+  }
+  const toks=wordTokens(name).filter(t=>t.length>=3);
+  if(toks.length){
+    c=meshes.map(m=>({m,score:toks.reduce((s,t)=>s+(m.norm.includes(norm(t))?1:0),0)})).filter(x=>!used.has(x.m.index)&&x.score>0).sort((a,b)=>b.score-a.score)[0]?.m;
+    if(c) return c;
+  }
+  return null;
+}
+function assignFallbackMeshes(parts, meshes){
+  const used=new Set(parts.filter(p=>p.meshIndex!=null).map(p=>p.meshIndex));
+  let cursor=0;
+  for(const p of parts){
+    if(p.meshIndex!=null) continue;
+    let m=bestMeshForPart(p.name, meshes, used);
+    if(!m){
+      while(cursor<meshes.length && used.has(meshes[cursor].index)) cursor++;
+      m=meshes[cursor] || null;
+    }
+    if(m){ p.meshName=m.name; p.meshNorm=m.norm; p.metrics=m.metrics; p.meshIndex=m.index; p.matchType='추정'; used.add(m.index); cursor++; }
+  }
+}
+function wordTokens(s){ return String(s||'').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean); }
+
 function dedupeKey(name){
   const n=norm(name);
   if(!n || /^MESH\d+$/.test(n) || /^PRODUCTDEFINITION/.test(n) || n==='DESIGN') return '';
@@ -608,7 +657,7 @@ function calcPart(p){
 function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body.innerHTML='<tr><td colspan="8" class="empty-row">파트가 없습니다.</td></tr>'; return; }
   body.innerHTML=state.parts.map(p=>`
     <tr data-id="${p.id}" class="${p.id===state.selectedId?'row-selected':''} ${p.meshName?'':'unmatched'}">
-      <td><span class="part-name">${esc(p.name)}</span><span class="part-sub">${p.meshName?'mesh: '+esc(p.meshName):'형상 미연결'}</span></td>
+      <td><span class="part-name">${esc(p.name)}</span><span class="part-sub">${p.meshName?'mesh: '+esc(p.meshName)+(p.matchType==='추정'?' · 추정':''):'형상 대기'}</span></td>
       <td>${input(p.id,'qty',p.qty,'number')}</td>
       <td><span class="tag">${PROCESS_LABELS[p.process]}</span><div class="reason">${esc(reasonText(p))}</div></td>
       <td>${selectProcess(p)}</td>
@@ -649,7 +698,7 @@ function onPartEdit(e){
 function selectPart(id){ state.selectedId=id; const p=state.parts.find(x=>x.id===id); showPart(p); renderParts(); renderSelected(); }
 function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId); const el=$('selectedPanel'); if(!p){ el.innerHTML='<h2>선택 파트</h2><p class="muted">파트를 선택하세요.</p>'; return; }
   const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금: 절곡수 입력':usesTime(p.process)?'시간 공정: 시간/개 입력':p.process==='purchase'?'구매품: 단가 입력':'기본 계산';
-  el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName||'형상 미연결')}</p>
+  el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName?('mesh: '+p.meshName+(p.matchType==='추정'?' · 추정 매칭':'')):'형상 표시 대기')}</p>
   <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>입력 기준</b><br>${mode}</div><div><b>예상 무게</b><br>${p.kgPerEa}kg/개</div></div>
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
   <h3>빠른 변경</h3><div class="quick-actions">
