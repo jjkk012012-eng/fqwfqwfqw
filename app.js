@@ -84,14 +84,14 @@ function baseTokens(s){
   return wordTokens(s).filter(t=>t.length>=2 && !/^(REV|ASM|ASSY|PART|BODY|TOTAL|DESIGN|MODEL|LEFT|RIGHT|TOP|BOTTOM)$/.test(t));
 }
 function learnedMap(){
-  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v48')||'{}')||{};}catch{return {};}
+  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v49')||'{}')||{};}catch{return {};}
 }
 function saveLearnedProcess(part){
   if(!part || !part.name || part.process==='unknown') return;
   const key=norm(part.name); if(!key) return;
   const map=learnedMap();
   map[key]={process:part.process, material:part.material, margin:part.margin, savedAt:Date.now()};
-  try{localStorage.setItem('factory_step_process_learn_v48', JSON.stringify(map));}catch{}
+  try{localStorage.setItem('factory_step_process_learn_v49', JSON.stringify(map));}catch{}
 }
 function findLearnedProcess(name){
   const key=norm(name); if(!key) return null;
@@ -123,7 +123,7 @@ function init(){
 }
 async function loadDefaultRates(){
   try{
-    const saved=localStorage.getItem('factory_step_rates_v47');
+    const saved=localStorage.getItem('factory_step_rates_v49');
     if(saved) state.rates=mergeRates(structuredClone(DEFAULT_RATES), JSON.parse(saved));
     else {
       const res=await fetch('data/rates.json'); if(res.ok) state.rates=mergeRates(structuredClone(DEFAULT_RATES), await res.json());
@@ -149,7 +149,7 @@ function bindEvents(){
   $('addPartBtn').onclick=addManualPart;
   $('fitButton').onclick=()=>fitCamera(true);
   document.querySelectorAll('.quick-grid button').forEach(b=>b.onclick=()=>{const p=selectedPart(); if(p){applyProcess(p,b.dataset.proc); renderAll(); showPart(p);}});
-  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v47', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
+  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v49', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
   $('downloadRatesBtn').onclick=downloadRates;
   $('loadRatesBtn').onclick=()=>$('rateFileInput').click();
   $('rateFileInput').onchange=e=>{const f=e.target.files?.[0]; if(f) loadRatesFile(f);};
@@ -524,37 +524,44 @@ function recommendProcess(part){
   const name=String(part.name||'').toUpperCase();
   const m=part.metrics||{};
   const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0,unknown:0};
+  const reasons=[];
+  const scoreReason=(proc, pts, txt)=>{ scores[proc]+=pts; if(txt) reasons.push(`${PROCESS_LABELS[proc]} +${pts}: ${txt}`); };
   const ret=(process, confidence, score, reasonList, extraScores={})=>{
     const outScores={...scores,...extraScores};
     outScores[process]=Math.max(outScores[process]||0, score);
     return {process, confidence, score, scores:outScores, reasons:reasonList.filter(Boolean).slice(0,10)};
   };
 
-  // 0) 사용자가 한 번 바꾼 파트명은 현장 학습값으로 최우선 적용.
+  // V49: 이전 버전에서 잘못 학습된 CNC가 새 로직을 덮지 않도록 V49 전용 학습키만 사용.
   const learned=findLearnedProcess(name);
   if(learned?.process){
     return ret(learned.process,'높음',999,[learned.reason],{[learned.process]:999});
   }
 
-  // 1) 이름 기반 1차 제외: 구매품/프로파일/선반은 공장 제작공법 전에 먼저 분리.
+  // 1) 이름으로 거의 확정 가능한 공법은 먼저 제외한다.
   const isPipeOrTube = /PIPE|TUBE|PIE|NIPPLE|FITTING|HOSE|ELBOW|UNION|배관|파이프|튜브|니플|호스|피팅/i.test(name);
   const isStdPurchase = /BOLT|SCREW|HEX\s*NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|LEAD|CABLE|WIRE|HANDLE|KNOB|LEVER|CYLINDER|DAMPER|O[-_]?RING|SPRING|HINGE|CASTER|COUPLER|COUPLING|STANDARD|규격품|구매품/i.test(name);
   const isProfileName = /PROFILE|AL[_-]?FRAME|ALFRAME|EXTRUSION|2020|3030|4040|4080|4545|5050|6060|8080|프로파일|압출/i.test(name);
   const isLatheName = /SHAFT|PIN|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPINDLE|SLEEVE|AXLE|축|핀|부싱|롤러|샤프트/i.test(name);
   const isPrintName = /PRINT|FDM|SLA|SLS|MJF|3D[_-]?PRINT|프린팅|출력/i.test(name);
 
-  // 2) 판금/사출/CNC 이름 힌트.
-  const strongSheetName = /SHEET|PANEL|COVER|COWL|HOOD|DUCT|BRACKET|PLATE|SKIN|SKEL|GUARD|SHIELD|SIDE|TOP|BOTTOM|DOOR|LID|판금|절곡|판재|판넬|패널|커버|후드|덕트|브라켓|가드|쉴드/i.test(name);
+  if(isPipeOrTube) return ret('purchase','높음',990,['파이프/튜브/니플/피팅 계열: 구매품'],{purchase:990});
+  if(isStdPurchase) return ret('purchase','높음',970,['표준품/상용품 이름: 구매품'],{purchase:970});
+  if(isProfileName) return ret('profile','높음',930,['프로파일/알루미늄 압출 규격명'],{profile:930});
+  if(isPrintName) return ret('print3d','높음',860,['3D프린팅/출력 공정 힌트'],{print3d:860});
+
+  // 2) 이름 힌트.
+  const strongSheetName = /SHEET|PANEL|COVER|COWL|HOOD|DUCT|BRACKET|PLATE|SKIN|SKEL|GUARD|SHIELD|SIDE|TOP|BOTTOM|DOOR|LID|FLANGE|BENT|FOLD|판금|절곡|판재|판넬|패널|커버|후드|덕트|브라켓|가드|쉴드/i.test(name);
   const hasT = /(^|[^0-9])((?:0\.3|0\.5|0\.8|1|1\.0|1\.2|1\.5|2|2\.0|2\.3|3|3\.0|4|5|6|8|9|10|12|15|16|18|20)T)([^0-9]|$)/i.test(name);
   const hasThinT = /(^|[^0-9])((?:0\.3|0\.5|0\.8|1|1\.0|1\.2|1\.5|2|2\.0|2\.3|3|3\.0|4|5|6|8|9|10)T)([^0-9]|$)/i.test(name);
   const hasThickT = /(^|[^0-9])(21T|22T|25T|30T|35T|40T|50T)([^0-9]|$)/i.test(name);
-  const isCncName = /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|MACHINING|가공|블록|지그|마운트|홀더|서포트|베이스/i.test(name);
+  const isCncName = /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|MACHINING|POCKET|SLOT|TAP|가공|블록|지그|마운트|홀더|서포트|베이스/i.test(name);
   const isInjectionName = /INJECTION|MOLD|MOULD|MOLDING|MOULDING|사출|금형/i.test(name);
   const plasticName = /\bABS\b|\bPOM\b|\bPC\b|\bPP\b|\bPE\b|PA66|NYLON|PLASTIC|RESIN|PLA|PETG|TPU|PEEK|수지|플라스틱/i.test(name);
   const metalName = /AL|A\d{4}|SUS|STS|SS400|S45C|SCM|SKD|STEEL|SPCC|SPHC|SECC|SGCC|C3604|C1100|철|스틸|스텐|알루미늄/i.test(name);
   const ribName = /RIB|RIBS|RIBBED|WEB|GUSSET|BOSS|SNAP|CLIP|HOOK|STIFFENER|POST|STANDOFF|LOCATOR|LATCH|DOGHOUSE|보강|리브|보스|스냅|클립|훅|살대|기둥/i.test(name);
 
-  // 3) 형상 지표. V48 핵심: 판금은 minDim 하나로 보지 않고 2V/A 두께, 열린 접힘 판, planar ratio까지 같이 본다.
+  // 3) 형상 지표. 두께 하나로 공법 확정하지 않고, 판금/사출/CNC 점수를 같이 계산한다.
   const minDim=num(m.minDim,0), midDim=num(m.midDim,0), maxDim=num(m.maxDim,0);
   const surfaceDensity=num(m.surfaceDensity,0);
   const orientCount=num(m.orientationCount,0);
@@ -563,87 +570,111 @@ function recommendProcess(part){
   const planarRatio=num(m.planarRatio,0);
   const domPlane=num(m.dominantPlaneRatio,0);
   const planarDir=num(m.planarDirectionCount,0);
-  const complexity=num(m.complexityScore,0) || Math.round(surfaceDensity*22 + orientCount*4 + solidness*30);
+  const complexity=num(m.complexityScore,0) || Math.round(surfaceDensity*20 + orientCount*3.5 + planarDir*2.2 + solidness*28);
 
-  const bboxThin = minDim>0 && minDim<=22 && maxDim/minDim>=2.6 && midDim/minDim>=1.05;
-  const tFromVA = estT>0 && estT<=30 ? estT : 0;
-  const thicknessRef = tFromVA || (bboxThin ? minDim : 0);
-  const wall1to20 = (hasT || (thicknessRef>=0.8 && thicknessRef<=22)) && !m.cylinderLike;
+  const bboxThin = minDim>0 && minDim<=22 && maxDim/minDim>=2.3 && midDim/minDim>=1.05;
+  const vaThin = estT>0 && estT<=24;
+  const thicknessRef = vaThin ? estT : (bboxThin ? minDim : 0);
+  const wall1to20 = (hasT || (thicknessRef>=0.7 && thicknessRef<=22)) && !m.cylinderLike;
   const wallUnder10 = (hasThinT || (thicknessRef>0 && thicknessRef<=10.5)) && !m.cylinderLike;
+  const aspectThin = thicknessRef>0 && maxDim/thicknessRef>=2.6 && midDim/thicknessRef>=1.0;
 
-  const aspectThin = thicknessRef>0 && maxDim/thicknessRef>=2.8 && midDim/thicknessRef>=1.0;
-  const planarSimple = (planarRatio>=0.62 && planarDir<=24) || (domPlane>=0.36 && planarDir<=18) || (orientCount>0 && orientCount<=28 && surfaceDensity<=6.8);
-  const openFoldedSheet = !!m.paperFoldLike || (!m.cylinderLike && maxDim>=18 && midDim>=8 && solidness<=0.42 && planarSimple && surfaceDensity<=8.5);
-  const plateByBox = bboxThin && surfaceDensity<=7.5 && orientCount<=40;
-  const sheetGeom = !!(m.sheetLike || m.sheetByThickness || m.uniformSheet || m.lowSolidSheet || plateByBox || openFoldedSheet || (wall1to20 && aspectThin && planarSimple));
+  const planeSimple =
+    (planarRatio>=0.62 && planarDir<=30) ||
+    (domPlane>=0.34 && planarDir<=24) ||
+    (orientCount>0 && orientCount<=38 && surfaceDensity<=7.8);
+  const foldedSheet = !!m.paperFoldLike || (!m.cylinderLike && maxDim>=16 && midDim>=6 && solidness<=0.55 && surfaceDensity<=10.5 && (planarRatio>=0.48 || orientCount<=54));
+  const flatPlate = bboxThin && surfaceDensity<=8.8 && orientCount<=54;
+  const simpleSheetGeometry = wall1to20 && aspectThin && (planeSimple || foldedSheet || flatPlate || m.sheetLike || m.sheetByThickness || m.lowSolidSheet || m.uniformSheet);
 
-  // 복잡 형상은 사출/CNC 후보. 단, 판금 접힘은 면 방향이 많아도 planar/simple로 남겨둔다.
   const ribFeature = ribName || !!m.ribLike;
-  const veryComplex = ribFeature || surfaceDensity>=8.8 || orientCount>=58 || complexity>=205 || (wallUnder10 && surfaceDensity>=6.2 && orientCount>=36 && planarRatio<0.62);
-  const simpleEnoughForSheet = sheetGeom && !ribFeature && !isInjectionName && !hasThickT && !(wallUnder10 && veryComplex && !openFoldedSheet && !strongSheetName && !hasT);
+  const thinComplex = wallUnder10 && (surfaceDensity>=8.2 || orientCount>=58 || planarDir>=34 || complexity>=205);
+  const hollowCase = wallUnder10 && solidness>0 && solidness<=0.32 && surfaceDensity>=5.2 && maxDim>=20 && midDim>=12;
+  const complexNoRib = !ribFeature && (thinComplex || (surfaceDensity>=9.5 && orientCount>=64) || complexity>=230);
+  const blockLike = maxDim>0 && !m.cylinderLike && !simpleSheetGeometry && (solidness>=0.18 || isCncName || hasThickT || (!wall1to20 && midDim>0));
 
-  // 4) 결정트리. 순서를 건드리면 판금이 다시 CNC로 빠진다.
-  if(isPipeOrTube){
-    return ret('purchase','높음',990,['파이프/튜브/니플/피팅 계열: 구매품'],{purchase:990});
-  }
-  if(isStdPurchase){
-    return ret('purchase','높음',970,['표준품/상용품 이름: 구매품'],{purchase:970});
-  }
-  if(isProfileName){
-    return ret('profile','높음',930,['프로파일/알루미늄 압출 규격명'],{profile:930});
-  }
+  // 선반은 이름 또는 길쭉한 원통일 때만 먼저 확정. 판금/프로파일 이름이면 선반 제외.
   if(isLatheName){
     return ret('lathe',(m.cylinderLike || !maxDim)?'높음':'보통',(m.cylinderLike || !maxDim)?900:760,['축/핀/부싱/롤러 계열'],{lathe:(m.cylinderLike || !maxDim)?900:760});
   }
   if(!strongSheetName && !isCncName && m.cylinderLike && m.slenderness>2.1){
     return ret('lathe','보통',760,['길쭉한 원통형 형상'],{lathe:760});
   }
-  if(isPrintName){
-    return ret('print3d','높음',860,['3D프린팅/출력 공정 힌트'],{print3d:860});
+
+  // 4) 공법 점수 계산.
+  if(strongSheetName) scoreReason('sheet',38,'판금/커버/패널/브라켓 계열 파트명');
+  if(hasT) scoreReason('sheet',42,'1~20T 두께 표기');
+  if(wall1to20) scoreReason('sheet',34,`추정두께 ${fmt1(thicknessRef)}mm`);
+  if(aspectThin) scoreReason('sheet',30,'얇고 넓은 비율');
+  if(foldedSheet) scoreReason('sheet',42,'종이접기/접힌 판 구조');
+  if(planeSimple) scoreReason('sheet',28,'단순 평면 조합');
+  if(flatPlate) scoreReason('sheet',22,'판재형 bounding box');
+  if(metalName) scoreReason('sheet',8,'금속 재질/이름 힌트');
+  if(plasticName) scoreReason('sheet',-18,'수지 재질 힌트');
+  if(ribFeature) scoreReason('sheet',-95,'리브/보스/스냅은 판금 제외');
+  if(complexNoRib && !foldedSheet && !strongSheetName && !hasT) scoreReason('sheet',-38,'복잡 기하 형상');
+  if(hasThickT) scoreReason('sheet',-80,'20T 초과 두꺼운 T 표기');
+
+  if(isInjectionName) scoreReason('injection',85,'사출/금형 이름 힌트');
+  if(ribFeature) scoreReason('injection',82,'리브/보스/스냅/클립/훅 피처');
+  if(plasticName) scoreReason('injection',34,'수지 재질/이름 힌트');
+  if(wallUnder10) scoreReason('injection',24,`10mm 이내 얇은 벽 ${fmt1(thicknessRef)}mm`);
+  if(hollowCase) scoreReason('injection',38,'속 빈 케이스형 얇은 벽 구조');
+  if(thinComplex) scoreReason('injection',30,'10mm 이내 복잡 형상');
+  if(metalName && !isInjectionName) scoreReason('injection',-24,'금속 힌트');
+  if(simpleSheetGeometry && !ribFeature && !plasticName) scoreReason('injection',-45,'단순 판 구조');
+
+  if(isCncName) scoreReason('cnc',48,'블록/지그/마운트/가공품 이름');
+  if(hasThickT) scoreReason('cnc',44,'20T 초과 두꺼운 가공품');
+  if(metalName) scoreReason('cnc',24,'금속 재질/이름 힌트');
+  if(blockLike) scoreReason('cnc',34,'덩어리형/일반 기하학 솔리드');
+  if(complexNoRib) scoreReason('cnc',38,'리브 없는 복잡 기하학 형상');
+  if(!ribFeature && maxDim>0 && !simpleSheetGeometry) scoreReason('cnc',28,'리브 없는 일반 기하학 형상');
+  if(simpleSheetGeometry && scores.sheet>=80) scoreReason('cnc',-52,'판금 후보가 강함');
+  if(plasticName && ribFeature) scoreReason('cnc',-34,'수지+리브는 사출 우선');
+
+  // 5) 최종 결정. 사출은 확실할 때만, 판금은 단순 판/접힘일 때 CNC보다 먼저 살린다.
+  const sheetStrong = scores.sheet>=88 && simpleSheetGeometry && !ribFeature && !isInjectionName && !hasThickT && !(complexNoRib && !foldedSheet && !strongSheetName && !hasT);
+  const injectionStrong = scores.injection>=95 && scores.injection>=scores.cnc+22 && scores.injection>=scores.sheet+20;
+  const cncStrong = scores.cnc>=70 || isCncName || blockLike || complexNoRib || hasThickT;
+
+  const topReasons=(proc)=>reasons.filter(r=>r.startsWith(PROCESS_LABELS[proc])).map(r=>r.replace(/^.*?\+?-?\d+:\s*/,''));
+
+  if(injectionStrong){
+    return ret('injection',scores.injection>=135?'높음':'보통',scores.injection,topReasons('injection'),scores);
   }
 
-  // 5) 리브/보스/스냅/클립/훅은 사출 우선. 사출도 동일 두께일 수 있으므로 판금보다 먼저 본다.
-  if(ribFeature || isInjectionName){
-    const reasons=[];
-    if(ribFeature) reasons.push('리브/보스/스냅/클립/훅 피처');
-    if(isInjectionName) reasons.push('사출/금형 힌트');
-    if(thicknessRef) reasons.push(`추정두께 ${fmt1(thicknessRef)}mm`);
-    return ret('injection','높음',960,reasons,{injection:960,cnc:520,sheet:180});
+  if(sheetStrong){
+    const conf = (scores.sheet>=130 || strongSheetName || hasT || foldedSheet) ? '높음' : '보통';
+    return ret('sheet',conf,scores.sheet,topReasons('sheet'),scores);
   }
 
-  // 6) 판금/절곡. V48에서 CNC보다 먼저 확정한다.
-  // 조건: 1~20mm 동일두께 추정 + 단순 판/접힘/종이접기형. 형상이 단순하면 CNC로 보내지 않는다.
-  if(simpleEnoughForSheet || ((strongSheetName || hasT) && !veryComplex && !plasticName)){
-    const reasons=[];
-    if(thicknessRef || hasT) reasons.push(`1~20mm 동일두께 ${thicknessRef?fmt1(thicknessRef)+'mm':'T표기'}`);
-    if(openFoldedSheet) reasons.push('종이접기/접힌 판 구조');
-    if(aspectThin || plateByBox) reasons.push('얇고 넓은 판 구조');
-    if(planarSimple) reasons.push('단순 평면 조합 형상');
-    if(strongSheetName) reasons.push('판금 계열 파트명');
-    return ret('sheet',(metalName||hasT||strongSheetName||openFoldedSheet)?'높음':'보통',(metalName||hasT||strongSheetName||openFoldedSheet)?940:870,reasons,{sheet:(metalName||hasT||strongSheetName||openFoldedSheet)?940:870,cnc:260});
+  // 얇고 복잡하지만 리브/보스가 없으면 사용자 기준상 사출 확정이 아니라 CNC/MCT 쪽으로 보낸다.
+  if(wallUnder10 && complexNoRib){
+    return ret('cnc','보통',Math.max(scores.cnc,840),[`10mm 이내 복잡 형상`, '리브/보스가 없어 CNC/MCT 우선'],scores);
   }
 
-  // 7) 10mm 이내 + 복잡 형상: 리브 있으면 위에서 사출, 없으면 수지명 여부에 따라 사출/CNC.
-  if(wallUnder10 && veryComplex){
-    if(plasticName){
-      return ret('injection','보통',850,[`10mm 이내 + 복잡 형상 + 수지 힌트`, `추정두께 ${fmt1(thicknessRef)}mm`, `복잡도 ${fmt1(complexity)}`],{injection:850,cnc:650});
-    }
-    return ret('cnc','보통',840,[`10mm 이내 + 복잡 형상`, '리브/보스가 없어 CNC/MCT 우선'],{cnc:840,injection:460});
+  if(scores.injection>=110 && (ribFeature || isInjectionName || (plasticName && hollowCase))){
+    return ret('injection',scores.injection>=140?'높음':'보통',scores.injection,topReasons('injection'),scores);
   }
 
-  // 8) 두꺼운 T, 블록/베이스/지그/마운트, 일반 기하학 솔리드는 CNC/MCT.
-  if(isCncName || hasThickT){
-    return ret('cnc',hasThickT?'높음':'보통',hasThickT?900:820,[hasThickT?'20mm 초과 두꺼운 T 표기':'절삭 가공품 이름'],{cnc:hasThickT?900:820});
+  if(cncStrong){
+    return ret('cnc',scores.cnc>=110?'높음':'보통',Math.max(scores.cnc,790),topReasons('cnc').length?topReasons('cnc'):['리브 없는 일반 기하학 형상'],scores);
+  }
+
+  // 마지막 보정: 판금 이름/T표기가 있으면 판금, 형상이 있으면 CNC.
+  if((strongSheetName || hasT) && !ribFeature && !plasticName){
+    return ret('sheet','보통',Math.max(scores.sheet,780),topReasons('sheet'),scores);
   }
   if(maxDim>0 && !m.cylinderLike){
-    return ret('cnc','보통',790,['리브 없는 일반 기하학적 솔리드: CNC/MCT'],{cnc:790,injection:plasticName?480:0});
+    return ret('cnc','보통',Math.max(scores.cnc,760),['일반 기하학 솔리드 기본값: CNC/MCT'],scores);
   }
-
   if(plasticName){
-    return ret('unknown','낮음',0,['수지명은 있으나 리브/복잡 형상 확인 필요'],{unknown:0,injection:430,cnc:400});
+    return ret('unknown','낮음',0,['수지명은 있으나 리브/복잡 케이스 확인 필요'],scores);
   }
-  return ret('unknown','낮음',0,['공법 선택 필요'],{unknown:0});
+  return ret('unknown','낮음',0,['공법 선택 필요'],scores);
 }
+
 function computeMetrics(raw,geom){
   const pos=raw.attributes?.position?.array||[], idx=raw.index?.array||[];
   const m={
@@ -839,7 +870,7 @@ function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manual
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
-  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,3).join(' / ')||'-')}</div><div class="calcnote">두께추정: ${fmt1(p.metrics?.estimatedThickness||0)}mm · 복잡도: ${fmt1(p.metrics?.complexityScore||0)} · 판금후보: ${(p.metrics?.sheetLike||p.metrics?.paperFoldLike||p.metrics?.sheetByThickness)?'가능':'낮음'} · 접힌판: ${(p.metrics?.paperFoldLike)?'가능':'낮음'} · 평면비율: ${fmt1((p.metrics?.planarRatio||0)*100)}% · 리브/보스: ${(p.metrics?.ribLike)?'가능':'낮음'}</div><div class="details-grid">
+  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,4).join(' / ')||'-')}</div><div class="calcnote">공법점수: 판금 ${Math.round(p.score?.scores?.sheet||0)} · 사출 ${Math.round(p.score?.scores?.injection||0)} · CNC ${Math.round(p.score?.scores?.cnc||0)}</div><div class="calcnote">두께추정: ${fmt1(p.metrics?.estimatedThickness||0)}mm · 복잡도: ${fmt1(p.metrics?.complexityScore||0)} · 판금후보: ${(p.metrics?.sheetLike||p.metrics?.paperFoldLike||p.metrics?.sheetByThickness)?'가능':'낮음'} · 접힌판: ${(p.metrics?.paperFoldLike)?'가능':'낮음'} · 평면비율: ${fmt1((p.metrics?.planarRatio||0)*100)}% · 리브/보스: ${(p.metrics?.ribLike)?'가능':'낮음'}</div><div class="details-grid">
     <div><label>예상중량 kg/개</label><input id="selWeight" value="${kgEach(p).toFixed(4)}"></div>
     <div><label>크기 mm</label><input value="${esc(dims||'-')}" disabled></div>
     <div><label>체적 cm³</label><input value="${volumeCm3(p).toFixed(2)}" disabled></div>
