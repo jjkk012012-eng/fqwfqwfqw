@@ -77,14 +77,14 @@ function baseTokens(s){
   return wordTokens(s).filter(t=>t.length>=2 && !/^(REV|ASM|ASSY|PART|BODY|TOTAL|DESIGN|MODEL|LEFT|RIGHT|TOP|BOTTOM)$/.test(t));
 }
 function learnedMap(){
-  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v35')||'{}')||{};}catch{return {};}
+  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v38')||'{}')||{};}catch{return {};}
 }
 function saveLearnedProcess(part){
   if(!part || !part.name || part.process==='unknown') return;
   const key=norm(part.name); if(!key) return;
   const map=learnedMap();
   map[key]={process:part.process, material:part.material, margin:part.margin, savedAt:Date.now()};
-  try{localStorage.setItem('factory_step_process_learn_v35', JSON.stringify(map));}catch{}
+  try{localStorage.setItem('factory_step_process_learn_v38', JSON.stringify(map));}catch{}
 }
 function findLearnedProcess(name){
   const key=norm(name); if(!key) return null;
@@ -116,7 +116,7 @@ function init(){
 }
 async function loadDefaultRates(){
   try{
-    const saved=localStorage.getItem('factory_step_rates_v35');
+    const saved=localStorage.getItem('factory_step_rates_v38');
     if(saved) state.rates=mergeRates(structuredClone(DEFAULT_RATES), JSON.parse(saved));
     else {
       const res=await fetch('data/rates.json'); if(res.ok) state.rates=mergeRates(structuredClone(DEFAULT_RATES), await res.json());
@@ -142,7 +142,7 @@ function bindEvents(){
   $('addPartBtn').onclick=addManualPart;
   $('fitButton').onclick=()=>fitCamera(true);
   document.querySelectorAll('.quick-grid button').forEach(b=>b.onclick=()=>{const p=selectedPart(); if(p){applyProcess(p,b.dataset.proc); renderAll(); showPart(p);}});
-  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v35', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
+  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v38', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
   $('downloadRatesBtn').onclick=downloadRates;
   $('loadRatesBtn').onclick=()=>$('rateFileInput').click();
   $('rateFileInput').onchange=e=>{const f=e.target.files?.[0]; if(f) loadRatesFile(f);};
@@ -162,12 +162,20 @@ async function handleFile(file){
     let occt={ok:false,meshes:[],error:''};
     try{occt=await parseWithOcct(buffer); buildThreeMeshes(occt.meshes||[]);}catch(e){console.warn(e); occt={ok:false,meshes:[],error:String(e.message||e)};}
     state.parseInfo={textInfo, occt};
-    const extracted=makeParts(textInfo);
+    // V38: viewer reliability first. If OCCT succeeded, build the part list from
+    // the OCCT assembly leaf nodes so every row owns exact mesh indices.
+    let extracted=[];
+    if(occt.ok && occt.result?.root){
+      extracted = makePartsFromOcct(occt.result, textInfo);
+    }
+    if(!extracted.length){
+      extracted = makeParts(textInfo);
+    }
     state.parts=extracted.map((p,i)=>initPart(p,i)).filter(Boolean);
     if(!state.parts.length && state.meshObjects.length){
-      state.parts=state.meshObjects.map((m,i)=>initPart({name:m.name||`PART_${i+1}`,qty:1,source:'3D shape',meshIndex:i,metrics:m.metrics,meshName:m.name},i));
+      state.parts=state.meshObjects.map((m,i)=>initPart({name:m.name||`PART_${i+1}`,qty:1,source:'3D shape',meshIndices:[i],metrics:m.metrics,meshName:m.name},i));
     }
-    state.parts.forEach((p,i)=>{ if(p.meshIndex==null) assignMeshToPart(p,i); });
+    state.parts.forEach((p,i)=>{ if(!p.meshIndices?.length && p.meshIndex==null) assignMeshToPart(p,i); });
     state.selectedId=state.parts[0]?.id||null;
     recalcAll(); renderAll();
     if(state.selectedId) showPart(selectedPart());
@@ -273,47 +281,72 @@ function initThree(){
   new ResizeObserver(resize).observe(el); resize();
   (function loop(){requestAnimationFrame(loop); if(controls)controls.update(); renderer.render(scene,camera);})();
 }
+function meshesForPart(part){
+  if(!part) return [];
+  const out=[];
+  if(Array.isArray(part.meshIndices) && part.meshIndices.length){
+    for(const i of part.meshIndices){ if(state.meshObjects[i]) out.push(state.meshObjects[i]); }
+  }
+  if(out.length) return [...new Map(out.map(o=>[o.index,o])).values()];
+  const one=meshForPart(part);
+  return one ? [one] : [];
+}
 function meshForPart(part){
   if(!part) return null;
   if(part.meshIndex!=null && state.meshObjects[part.meshIndex]) return state.meshObjects[part.meshIndex];
   const n=norm(part.name); if(!n) return null;
-  let c=state.meshObjects.find(o=>o.norm===n || o.norm.includes(n) || n.includes(o.norm)); if(c) return c;
+  let c=state.meshObjects.find(o=>o.norm===n || (!isNumberish(o.name) && (o.norm.includes(n) || n.includes(o.norm)))); if(c) return c;
+  const toks=baseTokens(part.name).filter(t=>t.length>=3);
+  if(toks.length){
+    let best=null,score=0;
+    for(const o of state.meshObjects){
+      if(isNumberish(o.name)) continue;
+      const s=toks.reduce((a,t)=>a+(o.norm.includes(norm(t))?1:0),0);
+      if(s>score){score=s; best=o;}
+    }
+    if(best && score>=2) return best;
+  }
   const nums=numberTokens(part.name); if(nums.length){c=state.meshObjects.find(o=>numberTokens(o.name).some(x=>nums.includes(x))); if(c) return c;}
   return null;
 }
 function showPart(part){
   clearFocus(); state.meshObjects.forEach(o=>o.group.visible=false);
   if(!part || !state.three.root) return;
-  const src=meshForPart(part); if(!src){renderViewerMessage('이 파트의 3D 형상 연결을 확인해야 합니다.'); return;}
+  const srcs=meshesForPart(part);
+  if(!srcs.length){renderViewerMessage('이 파트의 3D 형상 연결을 확인해야 합니다.'); return;}
   $('viewer').querySelector('.viewer-empty')?.remove();
-  const clone=src.group.clone(true); clone.visible=true;
-  clone.traverse(o=>{o.visible=true; if(o.isMesh){o.material=new THREE.MeshPhongMaterial({color:0x9be7ff,shininess:30,side:THREE.DoubleSide});} if(o.isLineSegments){o.material=new THREE.LineBasicMaterial({color:0x020617,transparent:true,opacity:.6});}});
-  normalizeClone(clone); state.focusClone=clone; state.three.root.add(clone); fitCamera(true);
+  const wrapper=new THREE.Group();
+  wrapper.name='FOCUS_'+part.name;
+  srcs.forEach(src=>{
+    const clone=src.group.clone(true); clone.visible=true;
+    clone.traverse(o=>{
+      o.visible=true;
+      if(o.isMesh){o.material=new THREE.MeshPhongMaterial({color:0x9be7ff,shininess:34,side:THREE.DoubleSide});}
+      if(o.isLineSegments){o.material=new THREE.LineBasicMaterial({color:0x020617,transparent:true,opacity:.66});}
+    });
+    wrapper.add(clone);
+  });
+  normalizeFocusGroup(wrapper);
+  state.focusClone=wrapper; state.three.root.add(wrapper);
+  fitCamera(true);
 }
 function renderViewerMessage(msg){
   const el=$('viewer'); if(!el.querySelector('.viewer-empty')){const d=document.createElement('div'); d.className='viewer-empty'; el.appendChild(d);} el.querySelector('.viewer-empty').textContent=msg;
 }
 function clearFocus(){const root=state.three.root; if(state.focusClone&&root){root.remove(state.focusClone); state.focusClone.traverse(o=>{if(o.geometry?.dispose)o.geometry.dispose(); if(o.material?.dispose)o.material.dispose();});} state.focusClone=null;}
-function normalizeClone(clone){
-  clone.updateWorldMatrix(true,true);
-  const box=new THREE.Box3().setFromObject(clone);
+function normalizeFocusGroup(group){
+  group.updateWorldMatrix(true,true);
+  const box=new THREE.Box3().setFromObject(group);
   if(!Number.isFinite(box.min.x)) return;
-
-  const size=new THREE.Vector3();
-  const center=new THREE.Vector3();
-  box.getSize(size);
-  box.getCenter(center);
-
+  const size=new THREE.Vector3(); const center=new THREE.Vector3();
+  box.getSize(size); box.getCenter(center);
   const maxDim=Math.max(size.x,size.y,size.z,1);
-  const targetSize=520;
+  // Display every selected part at a consistent service-screen size.
+  const targetSize=560;
   const scale=targetSize/maxDim;
-
-  // Important: Object3D matrix applies scale before translation.
-  // If we set position=-center and scale=s, the final center becomes (s-1)*center.
-  // So the translation must be -center*s to keep every selected part exactly at screen/world center.
-  clone.scale.setScalar(scale);
-  clone.position.set(-center.x*scale,-center.y*scale,-center.z*scale);
-  clone.updateMatrixWorld(true);
+  group.scale.setScalar(scale);
+  group.position.set(-center.x*scale,-center.y*scale,-center.z*scale);
+  group.updateMatrixWorld(true);
 }
 function visibleBox(){const box=new THREE.Box3(); let has=false; const root=state.three.root; if(!root) return {box,has}; root.updateWorldMatrix(true,true); root.traverse(o=>{if(!o.visible||!o.isMesh||!o.geometry)return; if(!o.geometry.boundingBox)o.geometry.computeBoundingBox(); const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); if(Number.isFinite(b.min.x)){box.union(b);has=true;}}); return {box,has};}
 function fitCamera(){
@@ -323,16 +356,65 @@ function fitCamera(){
   box.getSize(size); box.getCenter(center);
   const maxDim=Math.max(size.x,size.y,size.z,1);
   const fov=(camera.fov||38)*Math.PI/180;
-  const dist=(maxDim/(2*Math.tan(fov/2)))*1.18;
-
-  // Force visual center to the selected part center, not the original assembly coordinate.
-  camera.position.set(center.x+dist*.88, center.y+dist*.58, center.z+dist*.72);
-  camera.near=.01; camera.far=100000; camera.updateProjectionMatrix();
+  const dist=(maxDim/(2*Math.tan(fov/2)))*1.02;
+  camera.position.set(center.x+dist*.92, center.y+dist*.55, center.z+dist*.88);
+  camera.near=.01; camera.far=Math.max(100000, dist*20); camera.updateProjectionMatrix();
   if(controls){controls.target.copy(center); controls.update();}
 }
 
 function makeParts(textInfo){
   return textInfo.parts.map(p=>({name:p.name,qty:p.qty,source:p.source}));
+}
+
+// OCCT root tree based part extraction. This is the preferred path for viewer accuracy.
+function makePartsFromOcct(result, textInfo){
+  const leaves = collectOcctLeafNodes(result?.root).filter(x=>Array.isArray(x.meshIndices) && x.meshIndices.length);
+  if(!leaves.length) return [];
+  const textParts = textInfo?.parts || [];
+  const map = new Map();
+  leaves.forEach((leaf, idx)=>{
+    let name = bestLeafName(leaf.path, idx, textParts);
+    if(!name || isBadName(name) || isAssemblyName(name)) name = textParts[idx]?.name || `PART_${idx+1}`;
+    if(!name || isBadName(name) || isAssemblyName(name)) return;
+    const key = dedupeKey(name);
+    if(!key) return;
+    if(!map.has(key)) map.set(key,{name, qty:0, source:'OCCT leaf', meshIndices:[], paths:[]});
+    const row = map.get(key);
+    row.qty += 1;
+    row.meshIndices.push(...leaf.meshIndices);
+    row.paths.push(leaf.path.join(' > '));
+  });
+  return [...map.values()].map(p=>({
+    ...p,
+    meshIndices:[...new Set(p.meshIndices)].filter(i=>state.meshObjects[i]),
+    meshName:p.meshIndices?.length ? (state.meshObjects[p.meshIndices[0]]?.name || '') : ''
+  })).sort((a,b)=>a.name.localeCompare(b.name));
+}
+function collectOcctLeafNodes(root){
+  const out=[];
+  function walk(node,path=[]){
+    if(!node) return;
+    const name = cleanName(node.name || node.Name || 'UNNAMED');
+    const nextPath = [...path, name];
+    const children = Array.isArray(node.children) ? node.children : [];
+    const meshes = Array.isArray(node.meshes) ? node.meshes : [];
+    if(children.length===0 && meshes.length>0){
+      out.push({name, path:nextPath, meshIndices:meshes.map(Number).filter(Number.isFinite)});
+      return;
+    }
+    // Some STEP exporters put mesh on a non-assembly node that still has metadata children.
+    if(meshes.length>0 && !isAssemblyName(name) && !isBadName(name)){
+      out.push({name, path:nextPath, meshIndices:meshes.map(Number).filter(Number.isFinite)});
+    }
+    children.forEach(c=>walk(c,nextPath));
+  }
+  walk(root,[]);
+  return out;
+}
+function bestLeafName(path, idx, textParts){
+  const candidates = [...(path||[])].reverse().map(cleanName).filter(n=>n && !isBadName(n) && !isAssemblyName(n) && !/NEXT ASSEMBLY RELATIONSHIP/i.test(n));
+  if(candidates.length) return candidates[0];
+  return textParts?.[idx]?.name || '';
 }
 function assignMeshToPart(part, orderIndex){
   const pNorm=norm(part.name); let best=null, bestScore=-1;
@@ -361,12 +443,20 @@ function assignMeshToPart(part, orderIndex){
   }
   // 마지막 수단: 순서 매칭. 형상은 보여주되 추천/견적은 이름 기준을 우선한다.
   if(!best && state.meshObjects[orderIndex]) consider(state.meshObjects[orderIndex],80);
-  if(best){part.meshIndex=best.index; part.meshName=best.name; part.metrics=best.metrics; part.meshMatchScore=bestScore;}
+  if(best){part.meshIndex=best.index; part.meshIndices=[best.index]; part.meshName=best.name; part.metrics=best.metrics; part.meshMatchScore=bestScore;}
 }
 function isNumberish(name){return /^#?\d+$/.test(String(name||'').trim()) || /^MESH[_-]?\d+$/i.test(String(name||'').trim());}
 function initPart(p,i){
-  const part={id:'p'+Date.now()+'_'+i,name:p.name,qty:num(p.qty,1),source:p.source||'',meshIndex:p.meshIndex,meshName:p.meshName||'',metrics:p.metrics||null,process:'unknown',material:'AL6061',inputValue:0,margin:0,purchaseUnit:1000,manualWeight:null,quote:0,score:null};
-  assignMeshToPart(part,i);
+  const meshIndices=Array.isArray(p.meshIndices)?p.meshIndices.filter(x=>state.meshObjects[x]):[];
+  const firstMesh=meshIndices.length?state.meshObjects[meshIndices[0]]:null;
+  const part={
+    id:'p'+Date.now()+'_'+i, name:p.name, qty:num(p.qty,1), source:p.source||'',
+    meshIndices, meshIndex:p.meshIndex, meshName:p.meshName||firstMesh?.name||'',
+    metrics:p.metrics||firstMesh?.metrics||null, process:'unknown', material:'AL6061',
+    inputValue:0, margin:0, purchaseUnit:1000, manualWeight:null, quote:0, score:null
+  };
+  if(!part.meshIndices.length && part.meshIndex==null) assignMeshToPart(part,i);
+  if(part.meshIndices.length && part.meshIndex==null) part.meshIndex=part.meshIndices[0];
   const rec=recommendProcess(part); applyRecommendation(part,rec);
   return part;
 }
@@ -405,65 +495,92 @@ function defaultPurchasePrice(part){
   return 1000;
 }
 
+
 function recommendProcess(part){
   const name=String(part.name||'').toUpperCase();
-  const n=norm(name);
   const m=part.metrics||{};
-  const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0};
+  const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0,unknown:0};
   const reasons=[];
-  const add=(p,v,r)=>{scores[p]+=v; if(v>0&&r) reasons.push(`${processLabel(p)} +${v}: ${r}`);};
+  const ret=(process, confidence, score, reasonList, extraScores={})=>{
+    const outScores={...scores,...extraScores};
+    outScores[process]=Math.max(outScores[process]||0, score);
+    return {process, confidence, score, scores:outScores, reasons:reasonList.filter(Boolean).slice(0,5)};
+  };
 
   const learned=findLearnedProcess(name);
   if(learned?.process){
-    return {process:learned.process, score:999, confidence:'높음', scores:{...scores,[learned.process]:999}, reasons:[learned.reason]};
+    return ret(learned.process,'높음',999,[learned.reason]);
   }
 
-  // 1. 구매품은 최우선. 파이프/튜브/니플도 구매품으로 우선 분류한다.
-  if(anyMatch(PROC_RULES.purchase,name)) add('purchase',320,'표준품/구매품 이름');
-  if(/M\d+[-_ ]?L\d+|M\d+\b|ISO|DIN|KS/i.test(name) && /BOLT|SCREW|NUT|WASHER/i.test(name)) add('purchase',140,'규격품 표기');
+  const isPipeOrTube = /PIPE|TUBE|PIE|NIPPLE|FITTING|배관|파이프|튜브/i.test(name);
+  const isStdPurchase = /BOLT|SCREW|HEX\s*NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|LEAD|CABLE|WIRE|HANDLE|KNOB|LEVER|CYLINDER|DAMPER|O[-_]?RING|SPRING|HINGE|CASTER|COUPLER|COUPLING|CLAMP\s*LEVER/i.test(name);
+  const isProfileName = /PROFILE|AL[_-]?FRAME|ALFRAME|EXTRUSION|2020|3030|4040|4080|4545|5050|6060|8080|프로파일/i.test(name);
+  const isLatheName = /SHAFT|PIN|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPINDLE|SLEEVE|축|핀|부싱|롤러/i.test(name);
+  const isSheetName = /HOOD|COVER|PANEL|SHEET|SKEL|SKIN|BODY|SIDE|TOP|BOTTOM|DOOR|CASE|DUCT|BRACKET|판금|커버|후드|브라켓|판넬|패널/i.test(name);
+  const isCncName = /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|BY2|PLATE|가공|블록|지그|마운트|홀더|서포트/i.test(name);
+  const isInjectionName = /INJECTION|MOLD|MOULD|사출|금형/i.test(name);
+  const isPrintName = /PRINT|FDM|SLA|SLS|MJF|3D|프린팅|출력/i.test(name);
+  const plasticName = /\bABS\b|\bPOM\b|\bPC\b|\bPP\b|\bPE\b|PA66|NYLON|PLASTIC|RESIN|PLA|PETG|TPU|PEEK|수지/i.test(name);
+  const metalName = /AL|A\d{4}|SUS|STS|SS400|S45C|SCM|SKD|STEEL|SPCC|SPHC|SECC|SGCC|C3604|C1100|철|스틸/i.test(name);
+  const hasThinToken = /(^|[^0-9])(0\.5T|0\.8T|1T|1\.0T|1\.2T|1\.5T|2T|2\.0T|2\.3T|3T|3\.0T|4T|5T|6T)([^0-9]|$)/i.test(name);
+  const hasThickToken = /(^|[^0-9])(8T|9T|10T|12T|15T|16T|20T|25T|30T|40T)([^0-9]|$)/i.test(name);
 
-  // 2. 프로파일. 단, PIPE/TUBE/PIE/NIPPLE은 구매품 우선이라 감점한다.
-  if(anyMatch(PROC_RULES.profile,name) && !/PIPE|TUBE|PIE|NIPPLE/i.test(name)) add('profile',260,'프로파일/압출 이름');
+  // 1) 구매품은 무조건 먼저 뺀다. 파이프/튜브/니플도 구매품 우선.
+  if(isPipeOrTube){
+    return ret('purchase','높음',960,['파이프/튜브/니플 계열은 구매품 우선'],{purchase:960});
+  }
+  if(isStdPurchase){
+    return ret('purchase','높음',940,['볼트/너트/스크류/리벳/베어링/센서/핸들류 구매품'],{purchase:940});
+  }
 
-  // 3. 선반. 이름 + 형상 모두 반영.
-  if(anyMatch(PROC_RULES.lathe,name)) add('lathe',210,'축/원통 부품 이름');
-  if(m.cylinderLike) add('lathe',130,'길쭉한 원통형 형상');
-  if(m.slenderness>7 && m.midDim && m.minDim && m.midDim/m.minDim<1.55) add('lathe',80,'봉형 비율');
+  // 2) 프로파일/압출. 단 PIPE/TUBE/NIPPLE은 이미 구매품으로 제외됨.
+  if(isProfileName){
+    return ret('profile','높음',890,['프로파일/압출 규격명'],{profile:890});
+  }
 
-  // 4. 판금/절곡. 같은 두께 얇은 판재형이면 꺾였든 안 꺾였든 판금이다.
-  if(anyMatch(PROC_RULES.sheet,name)) add('sheet',130,'판재/커버/바디 계열 이름');
-  if(/\b(0\.8T|1T|1\.0T|1\.2T|1\.5T|2T|2\.0T|2\.3T|3T|3\.0T|4T|5T|6T|8T)\b/i.test(name)) add('sheet',120,'판재 두께 표기');
-  if(/BEND|BENT|FOLD|FLANGE|절곡/i.test(name)) add('sheet',120,'절곡 힌트');
-  if(m.uniformSheet) add('sheet',180,'같은 두께의 얇은 판재형');
-  else if(m.sheetLike) add('sheet',130,'넓고 얇은 판재형');
+  // 3) 선반. 이름이 확실하면 우선, 형상 보조.
+  if(isLatheName && (m.cylinderLike || m.slenderness>3 || !m.dims)){
+    return ret('lathe','높음',830,['축/핀/부싱/롤러 계열'],{lathe:830});
+  }
+  if(!isSheetName && !isCncName && m.cylinderLike && m.slenderness>2.2){
+    return ret('lathe','보통',690,['길쭉한 원통형 형상'],{lathe:690});
+  }
 
-  // 5. CNC/MCT. 구매품/판금/선반/프로파일이 아니고 덩어리형이면 CNC.
-  if(anyMatch(PROC_RULES.cnc,name)) add('cnc',170,'절삭 가공품 이름');
-  if(/(10T|12T|15T|16T|20T|25T|30T|40T)/i.test(name)) add('cnc',115,'두꺼운 소재/블록 표기');
-  if(m.solidness>.32 && !m.sheetLike && !m.cylinderLike) add('cnc',115,'bbox 대비 체적이 높은 덩어리형');
-  if(m.minDim>10 && m.midDim/m.minDim<4 && !m.cylinderLike) add('cnc',70,'두께가 있는 가공형 비율');
+  // 4) 판금/절곡. 같은 두께의 얇고 넓은 판재면 꺾였든 안 꺾였든 판금이다.
+  // 이름만으로는 확정하지 않고, 얇은 두께 토큰/mesh 형상과 같이 본다.
+  if(m.uniformSheet){
+    return ret('sheet','높음',860,['같은 두께의 얇은 판재형'],{sheet:860});
+  }
+  if(m.sheetLike && (isSheetName || hasThinToken)){
+    return ret('sheet','높음',810,['얇고 넓은 판재형 + 판금 이름/두께 표기'],{sheet:810});
+  }
+  if(hasThinToken && isSheetName){
+    return ret('sheet','높음',790,['판금 이름 + 얇은 두께 표기'],{sheet:790});
+  }
+  if(isSheetName && !hasThickToken && !m.cylinderLike && (!m.dims || m.sheetLike || m.minDim<=12)){
+    return ret('sheet','보통',640,['판금/커버/바디 계열 이름'],{sheet:640});
+  }
 
-  // 6. 사출/3D프린팅. 이름/재질 힌트가 있을 때만 강하게 추천.
-  if(anyMatch(PROC_RULES.injection,name)) add('injection',150,'수지/사출 이름');
-  if(anyMatch(PROC_RULES.print3d,name)) add('print3d',190,'3D프린팅 이름');
+  // 5) 사출/3D프린팅은 이름 힌트가 있을 때만 자동 추천. 없으면 CNC/분류필요로 남김.
+  if(isPrintName){
+    return ret('print3d','높음',780,['3D프린팅 공정명/출력 힌트'],{print3d:780});
+  }
+  if(isInjectionName || (plasticName && /CASE|HOUSING|COVER|BODY|CAP|BRACKET/i.test(name) && !m.sheetLike)){
+    return ret('injection', isInjectionName?'높음':'보통', isInjectionName?790:650, [isInjectionName?'사출/금형 힌트':'수지명 + 케이스/하우징 계열'], {injection:isInjectionName?790:650});
+  }
 
-  // 우선순위/배타 규칙
-  if(scores.purchase>0){scores.profile-=220; scores.sheet-=180; scores.cnc-=220; scores.lathe-=160; scores.injection-=120; scores.print3d-=120;}
-  if(scores.profile>180){scores.sheet-=80; scores.cnc-=130; scores.lathe-=90;}
-  if(scores.lathe>180){scores.sheet-=90; scores.cnc-=70;}
-  if(scores.sheet>220){scores.cnc-=160; scores.injection-=50; scores.print3d-=50;}
-  if(scores.cnc>220 && !m.sheetLike){scores.sheet-=80;}
-  if(scores.injection>130 && /AL|SUS|SS400|S45C|SCM|STEEL|SPCC|SECC|SGCC/i.test(name)) scores.injection-=120;
+  // 6) CNC/MCT. 구매품·프로파일·선반·판금으로 빠지지 않은 두꺼운 덩어리형 절삭품.
+  if(isCncName && (hasThickToken || !m.sheetLike)){
+    return ret('cnc', hasThickToken?'높음':'보통', hasThickToken?800:680, [hasThickToken?'두꺼운 소재 표기 + 절삭품 이름':'절삭 가공품 이름'], {cnc:hasThickToken?800:680});
+  }
+  if(!m.sheetLike && !m.cylinderLike && (m.solidness>.30 || (m.minDim>10 && m.midDim/m.minDim<4))){
+    return ret('cnc','보통',620,['판금/선반/구매품이 아닌 덩어리형 형상'],{cnc:620});
+  }
+  if(plasticName && !metalName){
+    return ret('injection','낮음',520,['수지명은 있으나 사출/3D 여부 확인 필요'],{injection:520,print3d:480});
+  }
 
-  const entries=Object.entries(scores).sort((a,b)=>b[1]-a[1]);
-  let [process,score]=entries[0];
-  const second=entries[1]?.[1]??0;
-  // 추천 정확도 우선: 애매한 케이스는 분류 필요로 둔다.
-  if(score<115 || score-second<35) process='unknown';
-  let conf='낮음';
-  if(score>=260 && score-second>=70) conf='높음';
-  else if(score>=170 && score-second>=45) conf='보통';
-  return {process,score,confidence:conf,scores,reasons:reasons.slice(0,6)};
+  return ret('unknown','낮음',0,['자동 확정 어려움: 공법 선택 필요'],{unknown:0});
 }
 
 function computeMetrics(raw,geom){
