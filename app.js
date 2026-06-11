@@ -933,21 +933,29 @@ function updateSelectedLive(part){
   const w=$('sideWeight'); if(w && document.activeElement!==w) w.value=kgEach(part).toFixed(4);
   const rowQ=$('statTotal'); if(rowQ) updateStats();
 }
+function inputUnitForProcess(p){
+  if(p.process==='purchase') return '원';
+  if(p.process==='sheet') return '회';
+  if(['cnc','lathe','injection','print3d'].includes(p.process)) return 'h';
+  if(p.process==='profile') return '원';
+  return '';
+}
 function rowHTML(p){
   const rec=p.score||{confidence:'낮음',score:0,reasons:[]};
-  const inputLabel = p.process==='purchase'?'구매단가':p.process==='sheet'?'절곡수':['cnc','lathe','injection','print3d'].includes(p.process)?'시간/개':p.process==='profile'?'가공비/개':'입력';
+  const inputLabel = p.process==='purchase'?'구매단가':p.process==='sheet'?'절곡수':['cnc','lathe','injection','print3d'].includes(p.process)?'시간/개':p.process==='profile'?'가공비/개':'입력값';
   const inputVal = p.process==='purchase'?num(p.purchaseUnit||p.inputValue):num(p.inputValue);
+  const inputUnit = inputUnitForProcess(p);
   return `<tr data-id="${p.id}" class="${p.id===state.selectedId?'selected':''}">
-    <td><span class="part-name">${esc(p.name)}</span><span class="sub">${p.meshName?'mesh: '+esc(p.meshName):'형상 연결 확인'}</span></td>
-    <td><input data-act="qty" data-id="${p.id}" value="${p.qty}"></td>
-    <td><span class="pill ${rec.confidence==='높음'?'high':rec.confidence==='보통'?'mid':'low'}">${processLabel(rec.process)} · ${rec.confidence}</span></td>
-    <td><select data-act="process" data-id="${p.id}">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></td>
-    <td><select data-act="material" data-id="${p.id}">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></td>
-    <td><label class="status-small">${inputLabel}</label><input data-act="input" data-id="${p.id}" value="${inputVal}"></td>
-    <td><label class="status-small">원</label><input data-act="extra" data-id="${p.id}" value="${num(p.extraCost,0)}"></td>
-    <td><input data-act="margin" data-id="${p.id}" value="${p.margin}"></td>
-    <td class="price">${won(p.quote)}</td>
-    <td><button class="delbtn" data-id="${p.id}">삭제</button></td>
+    <td class="part-cell"><span class="part-name">${esc(p.name)}</span><span class="sub">${p.meshName?'mesh: '+esc(p.meshName):'형상 연결 확인'}</span></td>
+    <td class="qty-cell"><div class="unit-input compact"><input data-act="qty" data-id="${p.id}" value="${p.qty}"><span>개</span></div></td>
+    <td class="recommend-cell"><span class="pill ${rec.confidence==='높음'?'high':rec.confidence==='보통'?'mid':'low'}">${processLabel(rec.process)}</span></td>
+    <td class="process-cell"><select data-act="process" data-id="${p.id}">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></td>
+    <td class="material-cell"><select data-act="material" data-id="${p.id}">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></td>
+    <td class="input-cell"><label class="status-small">${inputLabel}</label><div class="unit-input"><input data-act="input" data-id="${p.id}" value="${inputVal}"><span>${inputUnit}</span></div></td>
+    <td class="extra-cell"><label class="status-small">추가비용</label><div class="unit-input money"><input data-act="extra" data-id="${p.id}" value="${num(p.extraCost,0)}"><span>원</span></div></td>
+    <td class="margin-cell"><div class="unit-input compact"><input data-act="margin" data-id="${p.id}" value="${p.margin}"><span>%</span></div></td>
+    <td class="price-cell"><span class="price">${won(p.quote)}</span></td>
+    <td class="delete-cell"><button class="delbtn" data-id="${p.id}">삭제</button></td>
   </tr>`;
 }
 function handleCell(el,opts={}){
@@ -982,15 +990,15 @@ function renderSelected(){
     <b>${esc(p.name)}</b>
     <div class="muted">선택한 파트만 여기서 빠르게 수정합니다. 표가 위로 튀지 않습니다.</div>
     <div class="quick-edit-grid">
-      <label>수량<input id="sideQty" data-side-act="qty" value="${p.qty}"></label>
+      <label>수량<div class="unit-input"><input id="sideQty" data-side-act="qty" value="${p.qty}"><span>개</span></div></label>
       <label>공법<select id="sideProcess" data-side-act="process">${PROCESS_LIST.map(x=>`<option value="${x}" ${x===p.process?'selected':''}>${processLabel(x)}</option>`).join('')}</select></label>
       <label>재질<select id="sideMaterial" data-side-act="material">${MATERIALS.map(x=>`<option value="${x}" ${x===p.material?'selected':''}>${x}</option>`).join('')}</select></label>
-      <label>${inputLabel}<input id="sideInput" data-side-act="input" value="${inputVal}"></label>
-      <label>기타공수(비용+)<input id="sideExtra" data-side-act="extra" value="${num(p.extraCost,0)}"></label>
-      <label>마진%<input id="sideMargin" data-side-act="margin" value="${p.margin}"></label>
-      <label>예상중량 kg/개<input id="sideWeight" data-side-act="weight" value="${kgEach(p).toFixed(4)}"></label>
-      <label>크기 mm<input value="${esc(dims||'-')}" disabled></label>
-      <label>견적가<input id="sideQuote" value="${won(p.quote)}" disabled></label>
+      <label>${inputLabel}<div class="unit-input"><input id="sideInput" data-side-act="input" value="${inputVal}"><span>${inputUnitForProcess(p)}</span></div></label>
+      <label>기타비용<div class="unit-input money"><input id="sideExtra" data-side-act="extra" value="${num(p.extraCost,0)}"><span>원</span></div></label>
+      <label>마진<div class="unit-input"><input id="sideMargin" data-side-act="margin" value="${p.margin}"><span>%</span></div></label>
+      <label>예상중량<div class="unit-input"><input id="sideWeight" data-side-act="weight" value="${kgEach(p).toFixed(4)}"><span>kg/개</span></div></label>
+      <label>크기<div class="unit-input"><input value="${esc(dims||'-')}" disabled><span>mm</span></div></label>
+      <label class="wide">견적가<div class="unit-input money readonly"><input id="sideQuote" value="${won(p.quote)}" disabled></div></label>
     </div>
   </div>`;
   box.querySelectorAll('[data-side-act]').forEach(el=>{
@@ -1035,12 +1043,12 @@ function syncRowInputs(p, changedAct){
 function renderRates(){renderMaterialRates();renderProcessRates();renderMarginRates();}
 function renderMaterialRates(){
   const mats=state.rates.materials; const rows=MATERIALS.map(mat=>{const r=mats[mat]||{density:0,sheet:0,cnc:0,injection:0,print3d:0,profile:0}; return `<tr><td><b>${mat}</b></td>${['density','sheet','cnc','injection','print3d','profile'].map(k=>`<td><input data-rate="mat" data-mat="${mat}" data-key="${k}" value="${r[k]??0}"></td>`).join('')}</tr>`;}).join('');
-  $('materialRates').innerHTML=`<table><thead><tr><th>재질</th><th>밀도</th><th>판재 kg</th><th>CNC/선반 kg</th><th>사출 kg</th><th>3D kg</th><th>압출 kg</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('materialRates').innerHTML=`<table><thead><tr><th>재질</th><th>밀도</th><th>판재<br><small>원/kg</small></th><th>CNC/선반<br><small>원/kg</small></th><th>사출<br><small>원/kg</small></th><th>3D<br><small>원/kg</small></th><th>압출<br><small>원/kg</small></th></tr></thead><tbody>${rows}</tbody></table>`;
   $('materialRates').querySelectorAll('input').forEach(i=>i.oninput=()=>{const mat=i.dataset.mat,key=i.dataset.key; state.rates.materials[mat]=state.rates.materials[mat]||{}; state.rates.materials[mat][key]=num(i.value,0); recalcAll(); renderParts(); renderSelected();});
 }
 function renderProcessRates(){
   const defs=[['sheetBendEach','절곡 1회 단가'],['sheetBaseEach','판금 기본비/개'],['cncHourly','CNC/MCT 시간당 단가'],['cncSetup','CNC 셋업비/개'],['latheHourly','선반 시간당 단가'],['latheSetup','선반 셋업비/개'],['injectionHourly','사출 시간당 단가'],['injectionSetup','사출 셋업비/개'],['print3dHourly','3D프린팅 시간당 단가'],['print3dSetup','3D프린팅 셋업비/개'],['profileProcessEach','압출 가공비/개']];
-  $('processRates').innerHTML=defs.map(([k,label])=>`<label>${label}<input data-prate="${k}" value="${state.rates.process[k]??0}"></label>`).join('');
+  $('processRates').innerHTML=defs.map(([k,label])=>`<label>${label}<div class="unit-input money rate-money"><input data-prate="${k}" value="${state.rates.process[k]??0}"><span>원</span></div></label>`).join('');
   $('processRates').querySelectorAll('input').forEach(i=>i.oninput=()=>{state.rates.process[i.dataset.prate]=num(i.value,0); recalcAll(); renderParts(); renderSelected();});
 }
 function renderMarginRates(){
@@ -1049,7 +1057,7 @@ function renderMarginRates(){
 }
 function downloadRates(){downloadText('factory_rates.json',JSON.stringify(state.rates,null,2));}
 async function loadRatesFile(f){try{state.rates=mergeRates(structuredClone(DEFAULT_RATES),JSON.parse(await f.text())); renderRates(); recalcAll(); renderParts(); renderSelected(); flash('ok','단가표를 불러왔습니다.');}catch(e){flash('err','단가표 파일을 읽지 못했습니다.');}}
-function downloadCSV(){const header=['파트','수량','공법','재질','입력값','기타공수(비용+)','마진%','견적가']; const rows=state.parts.map(p=>[p.name,p.qty,processLabel(p.process),p.material,p.process==='purchase'?p.purchaseUnit:p.inputValue,num(p.extraCost,0),p.margin,p.quote]); downloadText('quote.csv',[header,...rows].map(r=>r.map(csvCell).join(',')).join('\n'));}
+function downloadCSV(){const header=['파트','수량','공법','재질','입력값','기타비용(원)','마진%','견적가']; const rows=state.parts.map(p=>[p.name,p.qty,processLabel(p.process),p.material,p.process==='purchase'?p.purchaseUnit:p.inputValue,num(p.extraCost,0),p.margin,p.quote]); downloadText('quote.csv',[header,...rows].map(r=>r.map(csvCell).join(',')).join('\n'));}
 function csvCell(v){return '"'+String(v??'').replace(/"/g,'""')+'"';}
 function downloadText(name,text){const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}

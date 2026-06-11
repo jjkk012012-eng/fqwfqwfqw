@@ -171,3 +171,28 @@ td input,td select{outline:none}
 tr.selected td{background:#eef4ff!important}
 @media(max-width:1280px){.quick-edit-grid{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:860px){.quick-edit-grid{grid-template-columns:1fr 1fr}.sidecol{display:flex;flex-direction:column}.selected-panel{order:-1}}
+
+/* V50 money layout: 원화 표기 + 견적표 정리 */
+.table-card{border-radius:16px;overflow:hidden;background:#fff;border:1px solid #dfe7f2;}
+.table-card .section-head{background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);}
+.table-wrap{max-height:560px!important;overflow:auto;border-top:1px solid #eef2f7;background:#fff;}
+.table-wrap table{width:100%;min-width:1220px!important;border-collapse:separate;border-spacing:0;table-layout:fixed;font-size:11px!important;}
+.table-wrap thead th{position:sticky;top:0;z-index:5;height:34px!important;background:#f3f6fb!important;border-bottom:1px solid #dce5f1;color:#344054;text-align:left;white-space:nowrap;}
+.table-wrap tbody td{height:44px!important;vertical-align:middle;border-bottom:1px solid #eef2f7;background:#fff;}
+.table-wrap tbody tr:nth-child(even) td{background:#fbfdff;}
+.table-wrap tbody tr:hover td{background:#f6faff!important;}
+.table-wrap tr.selected td{background:#eef4ff!important;box-shadow:none!important;}
+.table-wrap tr.selected td:first-child{box-shadow:inset 4px 0 0 var(--accent)!important;}
+.table-wrap th:nth-child(1),.table-wrap td:nth-child(1){width:220px;}
+.table-wrap th:nth-child(2),.table-wrap td:nth-child(2){width:82px;}
+.table-wrap th:nth-child(3),.table-wrap td:nth-child(3){width:102px;}
+.table-wrap th:nth-child(4),.table-wrap td:nth-child(4){width:120px;}
+.table-wrap th:nth-child(5),.table-wrap td:nth-child(5){width:112px;}
+.table-wrap th:nth-child(6),.table-wrap td:nth-child(6){width:150px;}
+.table-wrap th:nth-child(7),.table-wrap td:nth-child(7){width:150px;}
+.table-wrap th:nth-child(8),.table-wrap td:nth-child(8){width:90px;}
+.table-wrap th:nth-child(9),.table-wrap td:nth-child(9){width:116px;text-align:right;}
+.table-wrap th:nth-child(10),.table-wrap td:nth-child(10){width:64px;text-align:center;}
+.part-cell{overflow:hidden}.part-name{display:block;max-width:198px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.4px!important;font-weight:900;color:#111827;}.sub{display:block;max-width:198px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px!important;color:#8a94a6!important;margin-top:2px;}.recommend-cell .pill{display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:22px;font-size:10px!important;font-weight:950;}.process-cell select,.material-cell select{width:100%;min-width:0!important;height:30px!important;padding:4px 22px 4px 8px!important;border-radius:8px!important;background:#fff;font-size:11px!important;font-weight:850;}.unit-input{position:relative;display:flex;align-items:center;width:100%;min-width:0;}.unit-input input{width:100%;min-width:0!important;height:30px!important;padding:5px 28px 5px 8px!important;text-align:right;border:1px solid #d8e1ee;border-radius:8px;background:#fff;font-size:11px!important;font-weight:850;color:#111827;}.unit-input span{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:900;color:#7b8798;pointer-events:none;}.unit-input.compact input{padding-right:24px!important;}.unit-input.money input{padding-right:30px!important;}.input-cell .status-small,.extra-cell .status-small{display:block;margin-bottom:3px;font-size:9px!important;font-weight:850;color:#7a8699;line-height:1;}.margin-cell .unit-input input,.qty-cell .unit-input input{text-align:right;}.price-cell .price{display:block;font-size:11.8px!important;font-weight:950;color:#101828;white-space:nowrap;}.delbtn{height:28px!important;padding:4px 8px!important;font-size:10.5px!important;border-radius:8px!important;color:#e11d48;background:#fff;}.quick-edit-grid{grid-template-columns:1fr 1fr!important;gap:8px!important;}.quick-edit-grid label.wide{grid-column:1 / -1;}.quick-edit-grid .unit-input input,.quick-edit-grid select{height:32px!important;}.quick-edit-grid .unit-input.readonly input{padding-right:8px!important;text-align:left;background:#f7f9fc;color:#111827;}.rate-money input{padding-right:30px!important;}.rate-table th small{display:block;font-size:9px;color:#7b8798;font-weight:800;margin-top:1px;}.rate-form label{gap:6px;}.rate-form .unit-input{max-width:125px;}
+@media(max-width:1280px){.table-wrap{max-height:620px!important}.table-wrap table{min-width:1180px!important}}
+@media(max-width:860px){.table-wrap table{min-width:1120px!important}.quick-edit-grid{grid-template-columns:1fr 1fr!important}}
