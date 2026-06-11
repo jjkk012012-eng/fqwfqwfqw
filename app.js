@@ -1635,3 +1635,204 @@ function renderSelected(){
     <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims||'-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 큰 판면방향: ${m.majorPlaneDirections||0}<br>절곡선 분석: edgeLine ${m.edgeBendCount||0} · flangePatch ${m.patchBendCount||0} · directionHint ${m.directionBendCount||0} → 적용 ${p.bends}<br>홀 분석: 원형/타원 loop ${m.featureHoleCount||0} · compact ${m.holeCandidateCount||0} → 적용 ${p.taps}<br>중량 ${p.weightKg}kg/개 · 재료단가 ${won(matRate)}/kg · 재료비 ${won(matCost)}${cncHours?`<br>CNC 예상시간: ${cncHours}h = kg/개 × 수량 × kg당시간 × 복잡도`:''}<br>${p.process==='purchase'?'구매 예상단가 '+won(p.purchaseUnit)+' / 수정 가능<br>':''}${p.features?.presetNote?'기본규칙: '+esc(p.features.presetNote)+'<br>':''}${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
+
+
+/* ===============================
+   V16 OVERRIDE - 공장장 간편형 분류/견적
+   목표:
+   1) 어셈블리명은 상단 고정, 표에는 말단 파트만 표시
+   2) 절곡은 자동으로 "절곡품 여부"를 먼저 판단하고, 회수는 공장장이 수정
+   3) 봉/파이프/핸들/배관/밸브류는 판금이 아니라 구매품 우선
+   4) 판금은 이름+형상 모두 맞을 때만 추천. 형상만 애매하면 분류 필요.
+   =============================== */
+function v16PartNameUpper(name){ return String(name||'').toUpperCase(); }
+function v16Has(n, re){ return re.test(n); }
+function v16IsPurchaseName(n){
+  return /BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD|CHECK[_ -]?VALVE|BYGSR|HANDLE|GRIP|NOZZLE|COUPLER|COUPLING|ELBOW|SOCKET|UNION/.test(n);
+}
+function v16IsSheetName(n){
+  return /HOOD|COVER|PANEL|SHEET|SIDE|TOP|DUCT|BRACKET|BRKT|WATER[_ -]?BOTTLE/.test(n) && !/BASE|BLOCK|JIG|FIXTURE|SHAFT|PIN|BUSH|PIPE|TUBE|NIPPLE|VALVE|BYGSR|LEAD/.test(n);
+}
+function v16IsProfileName(n){ return /PROFILE|AL[-_ ]?FRAME|EXTRUSION|3030|4040|4080|2020|4545|6060|8080/.test(n) && !/PIPE|TUBE|PIE/.test(n); }
+function v16IsLatheName(n){ return /SHAFT|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPACER|PIN|축|부싱/.test(n) && !v16IsPurchaseName(n); }
+function v16IsCncName(n){ return /BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|PLATE|BRKT|BY2/.test(n); }
+
+function presetByPartName(name){
+  const n=v16PartNameUpper(name);
+  const preset={forceSheet:false,forcePurchase:false,forceCnc:false,thickness:null,bends:null,holes:null,material:null,note:''};
+  if(v16IsPurchaseName(n)){
+    preset.forcePurchase=true; preset.thickness=0; preset.bends=0; preset.holes=0;
+    preset.material=/SUS|STS|304|NIPPLE|PIPE|TUBE|PIE|VALVE|CHECK|FITTING/.test(n)?'SUS304':'SS400';
+    preset.note='구매품 우선: 예상단가만 넣고 공장이 구매단가 수정';
+    return preset;
+  }
+  if(v16IsSheetName(n)){
+    preset.forceSheet=false; // 이름만으로 강제 판금 금지. 형상 조건과 같이 판단.
+    preset.thickness=/\b(\d+(?:\.\d+)?)\s*T\b/.test(n)?null:1.5;
+    preset.material=/SUS|STS|304|HOOD|WATER/.test(n)?'SUS304':'SPCC';
+    preset.note='판금 후보: 얇은 판재형일 때만 판금 추천, 절곡수는 공장 확인';
+  }
+  return preset;
+}
+
+function deriveFeatures(name, metrics){
+  const n=v16PartNameUpper(name), preset=presetByPartName(n), m=metrics||{};
+  const tMatch=n.match(/(?:^|[-_\s])(\d+(?:\.\d+)?)\s*T(?:$|[-_\s])|(?:^|[-_\s])T\s*(\d+(?:\.\d+)?)(?:$|[-_\s])/);
+  const tName=tMatch?Number(tMatch[1]||tMatch[2]):0;
+  const minDim=Number(m.minDim)||0, midDim=Number(m.midDim)||0, maxDim=Number(m.maxDim)||0;
+  const solidness=Number(m.solidness)||0, majorPlaneDirections=Number(m.majorPlaneDirections)||0, normalClusterCount=Number(m.normalClusterCount)||0;
+  const ratioMaxMin=minDim>0?maxDim/minDim:0, ratioMidMin=minDim>0?midDim/minDim:0, ratioMaxMid=midDim>0?maxDim/midDim:0;
+  const cylinderLike=Boolean(m.cylinderLike);
+  const rodLike=Boolean(cylinderLike || (maxDim>80 && ratioMaxMid>2.8 && ratioMidMin<10));
+  const flatPlateLike=Boolean(m.flatPlateLike || (minDim>0 && ratioMaxMin>7 && ratioMidMin>2.2));
+  const shellLike=Boolean((solidness>0 && solidness<0.28 && maxDim>45 && minDim>0 && ratioMaxMin>3.3));
+  const purchaseName=preset.forcePurchase || v16IsPurchaseName(n);
+  const sheetNameHint=v16IsSheetName(n);
+  const profileName=v16IsProfileName(n);
+  const latheName=v16IsLatheName(n);
+  const thickByName=tName>=8;
+  const thinEnough=(tName>0?tName<=6:(minDim>0 && minDim<=6.5));
+  // 핵심: 형상만 얇다고 판금으로 확정하지 않음. 이름 힌트가 있거나 판면군이 매우 뚜렷해야 함. 봉/핸들형은 제외.
+  const sheetGeometry=Boolean(!purchaseName && !rodLike && !profileName && !latheName && !thickByName && thinEnough && (flatPlateLike || shellLike) && (sheetNameHint || majorPlaneDirections>=3));
+  let thickness=preset.thickness || tName || (sheetGeometry && minDim>0?round1(Math.min(minDim,6)):(sheetNameHint?1.5:8));
+  const edgeBends=Number(m.edgeBendCount)||0, patchBends=Number(m.patchBendCount)||0, directionBends=Number(m.directionBendCount)||0;
+  const rawBendCount=Math.max(edgeBends, patchBends, directionBends);
+  const bendCandidate=Boolean(sheetGeometry && (rawBendCount>0 || majorPlaneDirections>=2 || /BEND|BENT|FOLD|FLANGE|절곡|ㄱ|ㄷ|L[-_ ]?BRACKET|U[-_ ]?BRACKET/.test(n)));
+  // V16: 자동은 절곡품 여부 판단이 우선. 회수는 과신하지 않고, mesh가 뚜렷할 때만 초기값으로 넣음.
+  let bends=0;
+  if(bendCandidate && rawBendCount>0) bends=Math.max(1, Math.min(8, Math.round(rawBendCount)));
+  else if(bendCandidate && /U[-_ ]?BRACKET|ㄷ/.test(n)) bends=2;
+  else if(bendCandidate && /L[-_ ]?BRACKET|ㄱ/.test(n)) bends=1;
+  else if(bendCandidate) bends=0; // 절곡품 여부만 표시하고 회수는 공장 입력
+  let holes=0;
+  if(!purchaseName){
+    holes=Math.max(Number(m.featureHoleCount)||0, Number(m.holeCandidateCount)||0);
+    if(holes===0 && /TAP|M\d+/.test(n)) holes=1;
+    if(holes===0 && sheetGeometry && normalClusterCount>=14) holes=Math.min(24, Math.round((normalClusterCount-10)/2));
+  }
+  holes=Math.max(0,Math.min(200,Math.round(holes)));
+  const materialHint=preset.material || defaultMaterial(sheetGeometry?'sheet':(purchaseName?'purchase':'cnc'), n);
+  const density=(state.rates?.materials?.[materialHint]?.density)||2.7;
+  const volumeMm3=Number(m.volumeMm3)||0;
+  const autoWeightKg=volumeMm3>0?Math.max(0.001,(volumeMm3*density)/1000000):fallbackWeightKg(sheetGeometry?'sheet':(purchaseName?'purchase':'cnc'), thickness, maxDim);
+  const cncComplexity=Math.max(1,Math.min(2.2,1+(Number(m.normalComplexity)||0)*0.55+(holes>6?0.15:0)+(solidness<0.18&&!sheetGeometry?0.2:0)));
+  const bendDebug=bendCandidate?`절곡품 후보: 예 / 자동회수 ${bends||'공장입력'} / edge=${edgeBends}, patch=${patchBends}, direction=${directionBends}`:'절곡품 후보: 아니오';
+  const holeDebug=purchaseName?'구매품은 홀/타공 0':(holes>0?`원형/타원 홀 후보 ${holes}개: loop=${m.featureHoleCount||0}, compact=${m.holeCandidateCount||0}`:'홀 후보 없음');
+  return {metrics:m,tName,thickness,minDim,midDim,maxDim,solidness,flatPlateLike,shellLike,cylinderLike,rodLike,normalClusterCount,majorPlaneDirections,thickByName,bends,taps:holes,bendCandidate,sheetGeometry,sheetNameHint,profileName,latheName,purchaseName,patchBends,directionBends,edgeBends,holeDebug,bendDebug,presetNote:preset.note,forcePurchase:preset.forcePurchase,presetMaterial:preset.material,autoWeightKg,cncComplexity};
+}
+
+function classifyPartAdvanced(name,f){
+  const n=v16PartNameUpper(name); const scores={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,print3d:0,injection:0,welding:0,unknown:0}; const why={purchase:[],profile:[],lathe:[],sheet:[],cnc:[],print3d:[],injection:[],welding:[],unknown:[]};
+  const add=(k,pts,msg)=>{scores[k]+=pts;if(msg)why[k].push(msg)};
+  if(f.purchaseName) add('purchase',150,'구매품/표준품/봉·파이프·핸들류 우선');
+  if(f.rodLike && !f.sheetNameHint) add('purchase',55,'형상: 길고 가는 봉/핸들형, 판금 제외');
+  if(v16IsProfileName(n)) add('profile',105,'프로파일/압출 규격명');
+  if(v16IsLatheName(n)) add('lathe',80,'축/핀/부싱/선반류 이름');
+  if(f.cylinderLike && !f.purchaseName) add('lathe',45,'형상: 원통/선반 가능성');
+  if(f.sheetNameHint) add('sheet',35,'후드/커버/패널/판금류 이름');
+  if(f.sheetGeometry) add('sheet',75,'형상: 얇은 판재/쉘형 + 판금명 또는 뚜렷한 판면군');
+  if(f.bendCandidate) add('sheet',30,'절곡품 후보');
+  if(f.tName>0 && f.tName<=6) add('sheet',20,`${f.tName}T 얇은 소재명`);
+  if(v16IsCncName(n)) add('cnc',42,'플레이트/지그/가공품 이름');
+  if(f.solidness>0.34 && !f.sheetGeometry && !f.purchaseName) add('cnc',45,'형상: bbox 대비 체적 높은 절삭품');
+  if(f.tName>=8) add('cnc',35,`${f.tName}T 두꺼운 소재`);
+  if(/ABS|POM|PA66|NYLON|RESIN|PLASTIC/.test(n)){add('print3d',35,'플라스틱 소재명');add('injection',30,'플라스틱 소재명')}
+  if(!f.purchaseName && !f.profileName && !f.latheName && !f.sheetGeometry && !f.rodLike && scores.cnc<40) add('unknown',20,'자동 확정 어려움, 공장이 선택');
+  if(scores.purchase>=85){['profile','lathe','sheet','cnc','print3d','injection','welding'].forEach(k=>scores[k]-=90)}
+  if(scores.profile>=85){scores.sheet-=65;scores.cnc-=55}
+  if(scores.lathe>=80){scores.sheet-=55;scores.cnc-=25}
+  if(scores.sheet>=80){scores.cnc-=55}
+  const order=['purchase','profile','lathe','sheet','cnc','print3d','injection','welding','unknown'];
+  const ranked=order.map(k=>[k,scores[k]]).sort((a,b)=>b[1]-a[1]); const [best,bestScore]=ranked[0]; const second=ranked[1]?.[1]??0;
+  let process=best, confidence='낮음';
+  if(best==='unknown' || bestScore<50 || bestScore-second<10){process='unknown';confidence='낮음'} else if(bestScore>=100 && bestScore-second>=28) confidence='높음'; else confidence='보통';
+  const reasonKey=process==='unknown'?best:process; const reason=(why[reasonKey]||[]).slice(0,4).join(' / ')||'공장이 선택 필요'; const scoreLine=ranked.slice(0,5).map(([k,v])=>`${PROCESS_LABELS[k]} ${Math.round(v)}`).join(' · '); return {process,reason,confidence,scores,scoreLine};
+}
+
+function defaultMaterial(process,name){
+  const n=v16PartNameUpper(name);
+  if(/SUS|STS|304|HOOD|WATER|NIPPLE|PIPE|TUBE|PIE|VALVE|CHECK/.test(n)) return 'SUS304';
+  if(process==='purchase') return 'SS400';
+  if(process==='sheet') return /HOOD|WATER/.test(n)?'SUS304':'SPCC';
+  if(process==='print3d'||process==='injection') return /POM/.test(n)?'POM':'ABS';
+  return 'AL6061';
+}
+
+function handleFile(file){
+  state.fileName=file.name;
+  const asm=document.getElementById('assemblyName'); if(asm) asm.textContent=file.name;
+  setMessage('info',`${file.name} 읽는 중...`); resetScene();
+  (async()=>{
+    try{
+      const buffer=await file.arrayBuffer(); const text=await file.text(); const textResult=parseStepText(text,file.name);
+      let occtResult=null; try{occtResult=await parseWithOcct(buffer);}catch(err){console.warn(err);occtResult={ok:false,error:String(err?.message||err)}}
+      state.debug={fileName:file.name,text:textResult.debug,occt:occtResult.ok?{ok:true,meshCount:occtResult.meshes.length,sampleMeshNames:occtResult.meshes.slice(0,20).map(m=>m.name)}:occtResult};
+      if(occtResult.ok&&occtResult.meshes.length>0){buildThreeMeshes(occtResult.meshes);state.parts=mergeTextPartsWithMeshes(textResult.parts,occtResult.meshes);setMessage('ok',`어셈블리 고정: ${file.name} / 말단 파트 ${state.parts.length}종 분석 완료. 공법은 초깃값이며 공장이 수정합니다.`);$('statMode').textContent='OCCT+텍스트'}
+      else{state.parts=textResult.parts;setMessage(textResult.parts.length?'warn':'err',textResult.parts.length?`OCCT 실패. 텍스트 leaf part ${textResult.parts.length}종 추출. 3D는 제한됩니다.`:'파트 추출 실패. 진단 확인.');$('statMode').textContent='텍스트';$('viewerStatus').textContent='OCCT mesh 파싱 실패. 파트 목록은 STEP 텍스트에서 추출했습니다.'}
+      state.parts=state.parts.filter(p=>p&&p.name&&!isBadName(p.name)&&!isNumberishName(p.name)&&!/^PRODUCT_DEFINITION/i.test(p.name)).map((p,idx)=>enrichPart(p,idx));
+      recalcAll(); state.selectedId=state.parts[0]?.id||null; renderParts(); renderSelected(); updateStats(); renderDebug(); showAllMeshes();
+    }catch(err){console.error(err);setMessage('err',`파일 처리 오류: ${err.message||err}`)}
+  })();
+}
+
+function renderParts(){
+  const body=$('partsBody');
+  if(!state.parts.length){body.innerHTML='<tr><td colspan="12" class="empty-row">분석된 말단 파트가 없습니다.</td></tr>';return;}
+  body.innerHTML=state.parts.map(p=>{
+    const bendBadge=p.features?.bendCandidate?'<span class="badge bend-yes">절곡품 후보</span>':'<span class="badge bend-no">무절곡/확인</span>';
+    return `<tr data-id="${esc(p.id)}" class="${p.id===state.selectedId?'active':''}">
+      <td><div class="part-name">${esc(p.name)}</div><div class="hint">${esc(p.source||'leaf')} ${p.meshName?`/ mesh: ${esc(p.meshName)}`:''}</div></td>
+      <td><input data-field="quantity" data-id="${esc(p.id)}" type="number" min="0" value="${p.quantity}"></td>
+      <td><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span>${bendBadge}<span class="process-note">${esc(p.reason)} / ${esc(p.confidence)}<br>${esc(p.scoreLine||'')}</span></td>
+      <td>${selectHtml(p,'process',PROCESSES.map(x=>[x,PROCESS_LABELS[x]]))}</td>
+      <td>${selectHtml(p,'material',MATERIALS.map(x=>[x,x]))}</td>
+      <td><input data-field="thickness" data-id="${esc(p.id)}" type="number" min="0" step="0.1" value="${p.thickness}"></td>
+      <td><input data-field="weightKg" data-id="${esc(p.id)}" type="number" min="0" step="0.001" value="${p.weightKg||0}"></td>
+      <td><input data-field="taps" data-id="${esc(p.id)}" type="number" min="0" value="${p.taps}"></td>
+      <td><input data-field="bends" data-id="${esc(p.id)}" type="number" min="0" value="${p.bends}"></td>
+      <td><input data-field="purchaseUnit" data-id="${esc(p.id)}" type="number" min="0" value="${p.purchaseUnit||0}" ${p.process==='purchase'?'':'class="soft-disabled"'}></td>
+      <td><input data-field="margin" data-id="${esc(p.id)}" type="number" min="0" value="${p.margin}"></td>
+      <td class="money">${won(p.quote)}</td>
+    </tr>`}).join('');
+  body.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;selectPart(tr.dataset.id)}));
+  body.querySelectorAll('input,select').forEach(el=>el.addEventListener('change',onPartEdit));
+}
+
+function onPartEdit(e){
+  const p=state.parts.find(x=>x.id===e.target.dataset.id); if(!p)return; const f=e.target.dataset.field; let val=e.target.value;
+  if(['quantity','thickness','taps','bends','margin','purchaseUnit','weightKg'].includes(f)) val=Number(val)||0;
+  p[f]=val;
+  if(f==='process'){
+    p.margin=getDefaultMargin(val);
+    if(val==='purchase'&&(!p.purchaseUnit||p.purchaseUnit<=0))p.purchaseUnit=purchaseUnitPrice(p.name);
+    if(val==='purchase'){p.bends=0;p.taps=0;}
+  }
+  p.quote=calcQuote(p); renderParts(); renderSelected(); updateStats(); isolateSelectedMesh(p);
+}
+
+function renderSelected(){
+  const p=state.parts.find(x=>x.id===state.selectedId); const panel=$('selectedPanel');
+  if(!p){panel.innerHTML='<h2>선택 파트 검토</h2><p class="muted">파트를 선택하세요.</p>';return;}
+  const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
+  const material=state.rates.materials[p.material]||state.rates.materials.AL6061; const matRate=Math.round((material.market||0)*(1+(material.markupPercent||0)/100));
+  const matCost=p.process==='purchase'?0:Math.round((Number(p.weightKg)||0)*matRate*(Number(p.quantity)||0));
+  const cncHours=p.process==='cnc'?((Number(p.weightKg)||0)*(Number(p.quantity)||0)*(Number(state.rates.process.cnc.hoursPerKg)||0.65)*(Number(p.features?.cncComplexity)||1)).toFixed(2):null;
+  panel.innerHTML=`<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3>
+    <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">${esc(p.confidence)}</span></div>
+    <div class="quick-actions"><button class="primary" onclick="quickSetPart('purchase')">구매품</button><button onclick="quickSetPart('sheet0')">판금 무절곡</button><button onclick="quickSetPart('sheet1')">판금 1절곡</button><button onclick="quickSetPart('sheet2')">판금 2절곡</button><button onclick="quickSetPart('sheet3')">판금 3절곡</button><button onclick="quickSetPart('sheet4')">판금 4절곡</button><button onclick="quickSetPart('cnc')">CNC</button><button onclick="quickSetPart('holePlus')">홀+</button><button onclick="quickSetPart('holeMinus')">홀-</button></div>
+    <p class="mini">어셈블리: ${esc(state.fileName||'-')}<br>근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims||'-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / rodLike: ${p.features?.rodLike?'예':'아니오'}<br>절곡품 여부: ${p.features?.bendCandidate?'예':'아니오'} / 현재 절곡수 ${p.bends}<br>홀/타공 후보: ${p.taps}<br>중량 ${p.weightKg}kg/개 · 재료단가 ${won(matRate)}/kg · 재료비 ${won(matCost)}${cncHours?`<br>CNC 예상시간 ${cncHours}h = kg/개 × 수량 × kg당시간 × 복잡도`:''}<br>${p.process==='purchase'?'구매 예상단가 '+won(p.purchaseUnit)+' / 수정 가능<br>':''}${p.features?.presetNote?'기본규칙: '+esc(p.features.presetNote)+'<br>':''}${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}</p><div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
+}
+
+function quickSetPart(action){
+  const p=state.parts.find(x=>x.id===state.selectedId); if(!p)return;
+  if(action==='purchase'){p.process='purchase';p.bends=0;p.taps=0;p.margin=getDefaultMargin('purchase');p.purchaseUnit=p.purchaseUnit||purchaseUnitPrice(p.name);}
+  if(action==='cnc'){p.process='cnc';p.margin=getDefaultMargin('cnc');}
+  if(action==='sheet0'){p.process='sheet';p.bends=0;p.margin=getDefaultMargin('sheet');if(!p.material||p.material==='AL6061')p.material='SPCC';}
+  if(action==='sheet1'){p.process='sheet';p.bends=1;p.margin=getDefaultMargin('sheet');if(!p.material||p.material==='AL6061')p.material='SPCC';}
+  if(action==='sheet2'){p.process='sheet';p.bends=2;p.margin=getDefaultMargin('sheet');if(!p.material||p.material==='AL6061')p.material='SPCC';}
+  if(action==='sheet3'){p.process='sheet';p.bends=3;p.margin=getDefaultMargin('sheet');if(!p.material||p.material==='AL6061')p.material='SPCC';}
+  if(action==='sheet4'){p.process='sheet';p.bends=4;p.margin=getDefaultMargin('sheet');if(!p.material||p.material==='AL6061')p.material='SPCC';}
+  if(action==='holePlus')p.taps=(Number(p.taps)||0)+1;
+  if(action==='holeMinus')p.taps=Math.max(0,(Number(p.taps)||0)-1);
+  p.quote=calcQuote(p);renderParts();renderSelected();updateStats();isolateSelectedMesh(p);
+}

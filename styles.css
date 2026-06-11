@@ -16,3 +16,9 @@
 .table-card th:nth-child(11),.table-card td:nth-child(11){min-width:105px}
 .table-card th:nth-child(12),.table-card td:nth-child(12){min-width:120px}
 .soft-disabled{background:#f8fafc;color:#94a3b8}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0}.quick-actions button{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 10px;font-size:12px;font-weight:800;cursor:pointer}.quick-actions button:nth-child(1),.quick-actions button:nth-child(2){background:#eef6ff}.quick-actions button:nth-child(3){background:#fff7ed}.compact-rate{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.compact-rate .rate-row{grid-template-columns:1fr 88px}.sidecol{grid-template-columns:1.05fr .95fr}.viewer{height:460px}@media(max-width:1200px){.compact-rate{grid-template-columns:1fr}.sidecol{grid-template-columns:1fr}}
+
+
+/* V16 공장장 간편형 */
+.assembly-banner{display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin:12px 0;padding:14px 16px;background:#0f172a;color:#fff;border-radius:16px;box-shadow:0 10px 24px rgba(15,23,42,.16)}
+.assembly-banner div{display:flex;gap:10px;align-items:center;min-width:0}.assembly-banner strong{font-size:13px;color:#c7d2fe;white-space:nowrap}.assembly-banner span{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.process-note{display:block;margin-top:4px;color:#64748b;font-size:12px;line-height:1.35}.bend-yes{background:#ecfeff;color:#0e7490}.bend-no{background:#f1f5f9;color:#475569}.quick-actions button.primary{background:#111827;color:#fff;border-color:#111827}.table-wrap table{min-width:1180px}.side-card h3{margin-top:18px}
+@media(max-width:900px){.assembly-banner{grid-template-columns:1fr}.table-wrap table{min-width:1050px}}

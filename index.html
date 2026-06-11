@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>공장용 STEP 견적 계산기 V15 - V14 공장장 간편/정확도 개선</title>
+  <title>공장용 STEP 견적 계산기 V16 - 공장장 간편형</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div>
-      <h1>공장용 STEP 견적 계산기 V15</h1>
-      <p>STEP 파일을 올리면 말단 파트별 재료kg·구매단가·홀·절곡·공정비를 자동 초깃값으로 채우고, 공장이 수정해 견적을 확정합니다.</p>
+      <h1>공장용 STEP 견적 계산기 V16</h1>
+      <p>STEP 어셈블리는 상단에 고정하고, 말단 파트만 공법·재료·구매단가·절곡 여부를 수정해 견적을 확정합니다.</p>
     </div>
     <span class="pill">플랫폼 수수료 0원</span>
   </header>
@@ -24,7 +24,7 @@
         </button>
         <div id="dropZone" class="drop-zone" role="button" tabindex="0">
           <strong>또는 여기에 파일을 드래그하세요</strong>
-          <span>파일 선택 → 파트 클릭 → 공법, kg/개, 홀, 절곡, 구매단가만 수정하면 됩니다.</span>
+          <span>파일 선택 → 파트 클릭 → 공법, kg/개, 구매단가, 홀/타공, 절곡수만 수정하면 됩니다.</span>
         </div>
       </section>
 
@@ -38,6 +38,17 @@
       </section>
 
       <div id="message" class="message info">파일을 선택하면 분석을 시작합니다.</div>
+
+      <section id="assemblyBanner" class="assembly-banner">
+        <div>
+          <strong>어셈블리</strong>
+          <span id="assemblyName">파일 선택 전</span>
+        </div>
+        <div>
+          <strong>처리 기준</strong>
+          <span>어셈블리/서브어셈블리는 견적 제외, 말단 파트만 계산</span>
+        </div>
+      </section>
 
       <section class="viewer-card">
         <div class="card-title-row">
@@ -72,8 +83,8 @@
                 <th>재질</th>
                 <th>두께</th>
                 <th>kg/개</th>
-                <th>홀/탭</th>
-                <th>절곡</th>
+                <th>홀/타공</th>
+                <th>절곡수</th>
                 <th>구매단가</th>
                 <th>마진%</th>
                 <th>견적가</th>
