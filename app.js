@@ -1,4 +1,4 @@
-/* 공장용 STEP 견적 계산기 Real Viewer V8 - improved leaf name grouping + bend patch classifier */
+/* 공장용 STEP 견적 계산기 Real Viewer V10 - deterministic sheet defaults + hole/bend presets */
 const $ = (id) => document.getElementById(id);
 const state = {
   fileName: '',
@@ -488,7 +488,7 @@ function enrichPart(p, idx){
     ...p,
     id: p.id || `part_${idx}`,
     process,
-    material: defaultMaterial(process, p.name),
+    material: features.presetMaterial || defaultMaterial(process, p.name),
     thickness: features.thickness,
     taps: features.taps,
     bends: features.bends,
@@ -503,8 +503,40 @@ function enrichPart(p, idx){
   };
 }
 
+
+function presetByPartName(name){
+  const n = String(name||'').toUpperCase();
+  const preset = { forceSheet:false, forcePurchase:false, forceCnc:false, thickness:null, bends:null, holes:null, material:null, note:'' };
+  if(/BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n)){
+    preset.forcePurchase=true; preset.thickness=8; preset.bends=0; preset.holes=0; preset.material=/SUS|STS|NIPPLE|PIPE|TUBE|PIE|VALVE/.test(n)?'SUS304':'SS400'; preset.note='구매품 이름 규칙';
+    return preset;
+  }
+  // 사용자가 올린 HOOD 계열처럼 한 장 판금에서 사방 플랜지/귀가 꺾이는 부품은 mesh 패치 검출이 0이어도 초기값을 넣는다.
+  if(/HOOD[_ -]?BODY/.test(n)){
+    preset.forceSheet=true; preset.thickness=1.5; preset.bends=4; preset.holes=4; preset.material='SUS304'; preset.note='HOOD_BODY 판금 기본값: 절곡 4회, 홀/탭 후보 4개';
+    return preset;
+  }
+  if(/TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)){
+    preset.forceSheet=true; preset.thickness=1.5; preset.bends=4; preset.holes=4; preset.material='SUS304'; preset.note='TOP_COVER 판금 기본값: 절곡 4회, 홀/탭 후보 4개';
+    return preset;
+  }
+  if(/HOOD[_ -]?SKEL|SKEL/.test(n)){
+    preset.forceSheet=true; preset.thickness=1.5; preset.bends=2; preset.holes=2; preset.material='SUS304'; preset.note='SKEL 판금 후보 기본값';
+    return preset;
+  }
+  if(/WATER[_ -]?BOTTLE/.test(n)){
+    preset.forceSheet=true; preset.thickness=1.5; preset.bends=/SIDE|TOP|BOTTOM|BODY/.test(n)?4:2; preset.holes=/SIDE|TOP|BOTTOM|BODY/.test(n)?4:2; preset.material='SUS304'; preset.note='WATER_BOTTLE 판금 기본값';
+    return preset;
+  }
+  if(/COVER|PANEL|SHEET|SIDE|BRACKET/.test(n) && !/BASE|BLOCK|JIG|FIXTURE/.test(n)){
+    preset.forceSheet=true; preset.thickness=null; preset.bends=null; preset.holes=null; preset.material='SUS304'; preset.note='판금명 후보';
+  }
+  return preset;
+}
+
 function deriveFeatures(name, metrics){
   const n = String(name||'').toUpperCase();
+  const preset = presetByPartName(n);
   const tMatch = n.match(/(?:^|[-_\s])(\d+(?:\.\d+)?)\s*T(?:$|[-_\s])|(?:^|[-_\s])T\s*(\d+(?:\.\d+)?)(?:$|[-_\s])/);
   const tName = tMatch ? Number(tMatch[1]||tMatch[2]) : 0;
   const m = metrics || {};
@@ -516,12 +548,12 @@ function deriveFeatures(name, metrics){
   const flatPlateLike = Boolean(m.flatPlateLike || (minDim>0 && maxDim/minDim>7 && midDim/minDim>2.2));
   const shellLike = Boolean(flatPlateLike || (solidness>0 && solidness<0.24 && maxDim>45 && minDim>0 && maxDim/minDim>4));
   const cylinderLike = Boolean(m.cylinderLike);
-  const purchaseName = /BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n);
+  const purchaseName = preset.forcePurchase || /BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n);
   const bendNameHint = /BEND|BENT|FOLD|FLANGE|절곡|L[-_ ]?BRACKET|U[-_ ]?BRACKET|ㄱ|ㄷ/.test(n);
-  const sheetNameHint = /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|브라켓|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
+  const sheetNameHint = preset.forceSheet || /HOOD|COVER|PANEL|BODY|SKEL|SHEET|SIDE|TOP|브라켓|BRACKET|WATER[_ -]?BOTTLE|CASE_COVER/.test(n);
   const thickByName = tName>=10;
-  let thickness = tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
-  const sheetGeometry = (flatPlateLike || shellLike || (sheetNameHint && minDim>0 && minDim<=8)) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName && !purchaseName;
+  let thickness = preset.thickness || tName || (minDim>0 && minDim<=12 ? round1(minDim) : (sheetNameHint ? 1.5 : 8));
+  const sheetGeometry = preset.forceSheet || ((flatPlateLike || shellLike || (sheetNameHint && minDim>0 && minDim<=8)) && minDim>0 && minDim <= 12 && !cylinderLike && !thickByName && !purchaseName);
 
   // V9 절곡 기준
   // 실제 STEP mesh에서 플랜지 패치가 잡히면 그 값을 우선한다.
@@ -530,7 +562,8 @@ function deriveFeatures(name, metrics){
   let bends = 0;
   const patchBends = Number(m.bendPatchCount)||0;
   const directionBasedBends = sheetGeometry && majorPlaneDirections >= 2 ? Math.max(1, Math.min(8, majorPlaneDirections - 1)) : 0;
-  if(sheetGeometry && patchBends > 0) bends = patchBends;
+  if(preset.bends != null) bends = Math.max(bends, Number(preset.bends)||0);
+  if(sheetGeometry && patchBends > 0) bends = Math.max(bends, patchBends);
   if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) bends = Math.max(bends, 4);
   else if(sheetGeometry && /TOP[_ -]?COVER|COVER[_ -]?TOP/.test(n)) bends = Math.max(bends, 4);
   else if(sheetGeometry && /WATER[_ -]?BOTTLE.*(SIDE|TOP)|SIDE.*WATER[_ -]?BOTTLE/.test(n)) bends = Math.max(bends, 2);
@@ -544,7 +577,7 @@ function deriveFeatures(name, metrics){
   // V9 홀/탭 후보 기준
   // STEP mesh만으로는 나사산인지 단순 홀인지 확정 불가. 그래서 이 값은 "홀/탭 후보"로 표시하고,
   // 판금이면 타공비, CNC/선반/프로파일이면 탭비로 계산한다. 공장이 최종 수정한다.
-  let holeCandidates = 0;
+  let holeCandidates = preset.holes != null ? Number(preset.holes)||0 : 0;
   if(!purchaseName){
     if(/TAP|M\d+/.test(n)) holeCandidates = Math.max(holeCandidates, 1);
     if(sheetGeometry && /HOOD[_ -]?BODY/.test(n)) holeCandidates = Math.max(holeCandidates, 4);
@@ -556,7 +589,7 @@ function deriveFeatures(name, metrics){
   const taps = Math.max(0, Math.round(holeCandidates));
   const holeDebug = purchaseName ? '구매품은 홀/탭 자동 0' : (taps>0 ? `홀/탭 후보 ${taps}개: 이름/판금 형상 기준 초기값` : '홀/탭 후보 없음');
   const bendDebug = bends>0 ? `절곡 후보 ${bends}회: ${patchBends>0?'mesh 플랜지 패치':'판금명/형상 보정'} 기준 초기값` : '절곡 후보 없음';
-  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends, holeDebug, bendDebug};
+  return {metrics:m, tName, thickness, minDim, midDim, maxDim, solidness, flatPlateLike, shellLike, cylinderLike, normalClusterCount, majorPlaneDirections, dominantPlaneDirections, bendNameHint, sheetNameHint, thickByName, bends, taps, sheetGeometry, patchBends, holeDebug, bendDebug, presetNote:preset.note, forceSheet:preset.forceSheet, forcePurchase:preset.forcePurchase, presetMaterial:preset.material};
 }
 
 function round1(v){ return Math.round(v*10)/10; }
@@ -566,6 +599,9 @@ function classifyPartAdvanced(name, f){
   const scores = {purchase:0, profile:0, lathe:0, sheet:0, cnc:0, print3d:0, injection:0, welding:0, unknown:0};
   const why = {purchase:[], profile:[], lathe:[], sheet:[], cnc:[], print3d:[], injection:[], welding:[], unknown:[]};
   const add=(k,pts,msg)=>{ scores[k]+=pts; if(msg) why[k].push(msg); };
+
+  if(f.forcePurchase) add('purchase',150,'구매품 강제 규칙');
+  if(f.forceSheet) add('sheet',95,'판금 강제 규칙: '+(f.presetNote||''));
 
   // 1) 구매품: 볼트/너트/리벳/파이프/피팅/니플/센서/모터는 최우선. 파이프는 프로파일보다 먼저 잡는다.
   if(/BOLT|SCREW|HEX[_ -]?NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|FITTING|PIPE|TUBE|각관|배관|피팅|PIE|LEAD/.test(n)) add('purchase',110,'표준품/구매품 이름');
@@ -717,7 +753,7 @@ function renderSelected(){
   const m=p.features?.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
   panel.innerHTML = `<h2>선택 파트 검토</h2><h3>${esc(p.name)}</h3><div class="preview-box">${esc(PROCESS_LABELS[p.process]||p.process)}</div>
     <div><span class="badge">${esc(PROCESS_LABELS[p.process]||p.process)}</span> <span class="badge">${esc(p.material)}</span> <span class="badge">수량 ${p.quantity}</span> <span class="badge">신뢰도 ${esc(p.confidence)}</span></div>
-    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0} / 절곡패치: ${m.bendPatchCount||0}<br>두께 ${p.thickness}T / 탭 ${p.taps} / 절곡 ${p.bends}${m.bendPatchDebug ? '<br>절곡판정: '+esc(m.bendPatchDebug) : ''}<br>${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
+    <p class="mini">근거: ${esc(p.reason)}<br>점수: ${esc(p.scoreLine||'')}<br>크기: ${dims || '-'} mm / 체적비: ${Number(m.solidness||0).toFixed(2)} / 평면군: ${m.normalClusterCount||0} / 큰 판면방향: ${m.majorPlaneDirections||0} / 절곡패치: ${m.bendPatchCount||0}<br>두께 ${p.thickness}T / 홀·탭 후보 ${p.taps} / 절곡 ${p.bends}${m.bendPatchDebug ? '<br>절곡판정: '+esc(m.bendPatchDebug) : ''}<br>${p.features?.presetNote ? '기본규칙: '+esc(p.features.presetNote)+'<br>' : ''}${esc(p.features?.bendDebug||'')} / ${esc(p.features?.holeDebug||'')}<br>${p.meshName?'mesh: '+esc(p.meshName):'mesh 매칭 없음'}</p>
     <div class="selected-money">파트 견적 ${won(p.quote)}</div>`;
 }
 function isolateSelectedMesh(p){
