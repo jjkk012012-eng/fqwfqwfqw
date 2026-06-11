@@ -295,12 +295,41 @@ function renderViewerMessage(msg){
 }
 function clearFocus(){const root=state.three.root; if(state.focusClone&&root){root.remove(state.focusClone); state.focusClone.traverse(o=>{if(o.geometry?.dispose)o.geometry.dispose(); if(o.material?.dispose)o.material.dispose();});} state.focusClone=null;}
 function normalizeClone(clone){
-  clone.updateWorldMatrix(true,true); const box=new THREE.Box3().setFromObject(clone); if(!Number.isFinite(box.min.x)) return;
-  const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const maxDim=Math.max(size.x,size.y,size.z,1);
-  clone.position.x-=center.x; clone.position.y-=center.y; clone.position.z-=center.z; clone.scale.setScalar(520/maxDim);
+  clone.updateWorldMatrix(true,true);
+  const box=new THREE.Box3().setFromObject(clone);
+  if(!Number.isFinite(box.min.x)) return;
+
+  const size=new THREE.Vector3();
+  const center=new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+
+  const maxDim=Math.max(size.x,size.y,size.z,1);
+  const targetSize=520;
+  const scale=targetSize/maxDim;
+
+  // Important: Object3D matrix applies scale before translation.
+  // If we set position=-center and scale=s, the final center becomes (s-1)*center.
+  // So the translation must be -center*s to keep every selected part exactly at screen/world center.
+  clone.scale.setScalar(scale);
+  clone.position.set(-center.x*scale,-center.y*scale,-center.z*scale);
+  clone.updateMatrixWorld(true);
 }
 function visibleBox(){const box=new THREE.Box3(); let has=false; const root=state.three.root; if(!root) return {box,has}; root.updateWorldMatrix(true,true); root.traverse(o=>{if(!o.visible||!o.isMesh||!o.geometry)return; if(!o.geometry.boundingBox)o.geometry.computeBoundingBox(); const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); if(Number.isFinite(b.min.x)){box.union(b);has=true;}}); return {box,has};}
-function fitCamera(){const {camera,controls}=state.three; if(!camera) return; const {box,has}=visibleBox(); if(!has)return; const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const maxDim=Math.max(size.x,size.y,size.z,1); const fov=(camera.fov||38)*Math.PI/180; const dist=(maxDim/(2*Math.tan(fov/2)))*1.10; camera.position.set(center.x+dist*.95,center.y+dist*.72,center.z+dist*.48); camera.near=.01; camera.far=100000; camera.updateProjectionMatrix(); if(controls){controls.target.copy(center); controls.update();}}
+function fitCamera(){
+  const {camera,controls}=state.three; if(!camera) return;
+  const {box,has}=visibleBox(); if(!has)return;
+  const size=new THREE.Vector3(); const center=new THREE.Vector3();
+  box.getSize(size); box.getCenter(center);
+  const maxDim=Math.max(size.x,size.y,size.z,1);
+  const fov=(camera.fov||38)*Math.PI/180;
+  const dist=(maxDim/(2*Math.tan(fov/2)))*1.18;
+
+  // Force visual center to the selected part center, not the original assembly coordinate.
+  camera.position.set(center.x+dist*.88, center.y+dist*.58, center.z+dist*.72);
+  camera.near=.01; camera.far=100000; camera.updateProjectionMatrix();
+  if(controls){controls.target.copy(center); controls.update();}
+}
 
 function makeParts(textInfo){
   return textInfo.parts.map(p=>({name:p.name,qty:p.qty,source:p.source}));
