@@ -3,43 +3,50 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>STEP 견적 자동 산출 V38</title>
+  <title>STEP 견적 자동 산출</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div>
-      <h1>STEP 견적 자동 산출</h1>
-      <p>파트별 공법을 자동 추천하고 공장 단가표로 견적을 산출합니다.</p>
+  <header class="app-header">
+    <div class="brand-block">
+      <div class="logo-mark">SQ</div>
+      <div>
+        <h1>STEP 견적 자동 산출</h1>
+        <p>파트별 공법 추천 · 공장 단가표 기반 견적 계산</p>
+      </div>
     </div>
-    <div class="badge">공장용 견적 도구</div>
+    <div class="header-actions">
+      <span class="service-pill">공장 내부용</span>
+      <span class="service-pill dark">STEP/STP</span>
+    </div>
   </header>
 
-  <main class="layout">
+  <main class="shell">
     <section class="maincol">
       <section class="upload-card" id="dropZone">
         <input id="fileInput" type="file" accept=".step,.stp,.STEP,.STP" />
         <button id="fileButton" class="primary">STEP/STP 파일 선택</button>
         <div class="upload-copy">
-          <strong>파일을 선택하거나 이곳에 드래그하세요.</strong>
-          <span>어셈블리는 제외하고 말단 파트만 표에 표시합니다.</span>
+          <strong>파일을 선택하거나 드래그하세요.</strong>
+          <span>말단 파트만 불러오고, 파트별 공법과 단가를 수정해 견적을 확정합니다.</span>
         </div>
       </section>
 
-      <section class="stats">
+      <section class="stats" aria-label="견적 요약">
         <div><b id="statParts">0</b><span>파트 수</span></div>
         <div><b id="statTotal">0원</b><span>총 견적</span></div>
         <div><b id="statStatus">대기</b><span>분석 상태</span></div>
       </section>
+
       <div id="message" class="message info">파일을 업로드하면 분석을 시작합니다.</div>
 
       <section class="viewer-card">
-        <div class="section-head">
+        <div class="section-head viewer-head">
           <div>
-            <h2>3D 뷰어</h2>
-            <p>선택한 파트의 실제 3D 형상을 화면 중앙에 크게 표시합니다.</p>
+            <h2>파트 뷰어</h2>
+            <p>견적표에서 파트를 선택하면 해당 파트만 크게 표시됩니다.</p>
           </div>
-          <button id="fitButton" class="ghost">선택 파트 맞춤</button>
+          <button id="fitButton" class="ghost">화면 맞춤</button>
         </div>
         <div id="viewer" class="viewer"><div class="viewer-empty">STEP 파일을 업로드하세요.</div></div>
       </section>
@@ -48,12 +55,12 @@
         <div class="section-head">
           <div>
             <h2>파트 견적표</h2>
-            <p>공법을 확인하고 필요한 입력값만 수정하세요.</p>
+            <p>공법, 재질, 수량, 시간/절곡수/구매단가를 바로 수정하세요.</p>
           </div>
           <div class="actions">
             <button id="addPartBtn" class="ghost">파트 추가</button>
-            <button id="recalcBtn" class="ghost">전체 재계산</button>
-            <button id="csvBtn" class="ghost">CSV 내보내기</button>
+            <button id="recalcBtn" class="ghost">재계산</button>
+            <button id="csvBtn" class="ghost">CSV</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -78,8 +85,11 @@
     </section>
 
     <aside class="sidecol">
-      <section class="panel" id="selectedPanel">
-        <h2>선택 파트</h2>
+      <section class="panel selected-panel" id="selectedPanel">
+        <div class="panel-title">
+          <h2>선택 파트</h2>
+          <span>빠른 수정</span>
+        </div>
         <div id="selectedInfo" class="muted">파트를 선택하세요.</div>
         <div class="quick-grid">
           <button data-proc="sheet">판금/절곡</button>
@@ -94,12 +104,15 @@
 
       <section class="panel rates-panel">
         <div class="rate-title">
-          <h2>단가표</h2>
-          <div class="mini-actions">
-            <button id="saveRatesBtn">브라우저 저장</button>
-            <button id="downloadRatesBtn">다운로드</button>
-            <button id="loadRatesBtn">불러오기</button>
+          <div>
+            <h2>단가표</h2>
+            <p>저장 후 다음 접속 때 그대로 불러올 수 있습니다.</p>
           </div>
+        </div>
+        <div class="mini-actions top-actions">
+          <button id="saveRatesBtn">저장</button>
+          <button id="downloadRatesBtn">다운로드</button>
+          <button id="loadRatesBtn">불러오기</button>
         </div>
         <input id="rateFileInput" type="file" accept=".json" />
         <div class="mini-actions full">
