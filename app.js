@@ -1,27 +1,235 @@
 const $ = (id) => document.getElementById(id);
 const nf = new Intl.NumberFormat('ko-KR');
-const PROCESS_LABELS = {purchase:'구매품', sheet:'판금/절곡', cnc:'CNC/MCT', lathe:'선반', injection:'사출', print3d:'3D프린팅', profile:'압출/프로파일', welding:'용접', unknown:'분류 필요'};
-const MATERIALS = ['AL6061','SUS304','SS400','SPCC','ABS','POM'];
-const PROCESSES = ['purchase','sheet','cnc','lathe','injection','print3d','profile','welding','unknown'];
+const PROCESS_LABELS = {purchase:'구매품', sheet:'판금/절곡', cnc:'CNC/MCT', lathe:'선반', injection:'사출', print3d:'3D프린팅', profile:'압출/프로파일', unknown:'분류 필요'};
+const MATERIALS = ["AL6061", "AL5052", "AL7075", "SUS304", "SUS316", "SUS430", "SS400", "S45C", "SCM440", "SKD11", "SPCC", "SPHC", "SECC", "SGCC", "C3604", "C1100", "ABS", "POM", "PC", "PP", "PE", "PA66", "MC_NYLON", "PLA", "PETG", "TPU", "PEEK"];
+const PROCESSES = ['purchase','sheet','cnc','lathe','injection','print3d','profile','unknown'];
 const state = {rates:null, fileName:'', assemblyName:'-', parts:[], selectedId:null, occt:null, debug:{}, meshObjects:[], meshByNorm:new Map(), three:{}};
 const DEFAULT_RATES = {
   materials:{
-    AL6061:{density:2.70,sheet:6900,cnc:7200,injection:7200,print3d:8500,profile:7600},
-    SUS304:{density:7.93,sheet:6100,cnc:6500,injection:0,print3d:0,profile:6500},
-    SS400:{density:7.85,sheet:1650,cnc:1800,injection:0,print3d:0,profile:1800},
-    SPCC:{density:7.85,sheet:1600,cnc:1750,injection:0,print3d:0,profile:1750},
-    ABS:{density:1.04,sheet:0,cnc:4500,injection:3800,print3d:8500,profile:0},
-    POM:{density:1.41,sheet:0,cnc:9200,injection:8500,print3d:12000,profile:0}
+      "AL6061": {
+          "density": 2.7,
+          "sheet": 6900,
+          "cnc": 7200,
+          "injection": 7200,
+          "print3d": 8500,
+          "profile": 7600
+      },
+      "AL5052": {
+          "density": 2.68,
+          "sheet": 6500,
+          "cnc": 6900,
+          "injection": 0,
+          "print3d": 8200,
+          "profile": 7200
+      },
+      "AL7075": {
+          "density": 2.81,
+          "sheet": 9800,
+          "cnc": 10500,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 10800
+      },
+      "SUS304": {
+          "density": 7.93,
+          "sheet": 6100,
+          "cnc": 6500,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 6500
+      },
+      "SUS316": {
+          "density": 7.98,
+          "sheet": 8400,
+          "cnc": 9000,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 9000
+      },
+      "SUS430": {
+          "density": 7.7,
+          "sheet": 4300,
+          "cnc": 4700,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 4700
+      },
+      "SS400": {
+          "density": 7.85,
+          "sheet": 1650,
+          "cnc": 1800,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 1800
+      },
+      "S45C": {
+          "density": 7.85,
+          "sheet": 0,
+          "cnc": 2200,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 2200
+      },
+      "SCM440": {
+          "density": 7.85,
+          "sheet": 0,
+          "cnc": 3300,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 3300
+      },
+      "SKD11": {
+          "density": 7.7,
+          "sheet": 0,
+          "cnc": 9500,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 0
+      },
+      "SPCC": {
+          "density": 7.85,
+          "sheet": 1600,
+          "cnc": 1750,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 1750
+      },
+      "SPHC": {
+          "density": 7.85,
+          "sheet": 1550,
+          "cnc": 1700,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 1700
+      },
+      "SECC": {
+          "density": 7.85,
+          "sheet": 1900,
+          "cnc": 2050,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 2050
+      },
+      "SGCC": {
+          "density": 7.85,
+          "sheet": 2000,
+          "cnc": 2150,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 2150
+      },
+      "C3604": {
+          "density": 8.5,
+          "sheet": 0,
+          "cnc": 9800,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 9800
+      },
+      "C1100": {
+          "density": 8.96,
+          "sheet": 11000,
+          "cnc": 11500,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 11500
+      },
+      "ABS": {
+          "density": 1.04,
+          "sheet": 0,
+          "cnc": 4500,
+          "injection": 3800,
+          "print3d": 8500,
+          "profile": 0
+      },
+      "POM": {
+          "density": 1.41,
+          "sheet": 0,
+          "cnc": 9200,
+          "injection": 8500,
+          "print3d": 12000,
+          "profile": 0
+      },
+      "PC": {
+          "density": 1.2,
+          "sheet": 0,
+          "cnc": 6200,
+          "injection": 5800,
+          "print3d": 13000,
+          "profile": 0
+      },
+      "PP": {
+          "density": 0.9,
+          "sheet": 0,
+          "cnc": 3200,
+          "injection": 2700,
+          "print3d": 0,
+          "profile": 0
+      },
+      "PE": {
+          "density": 0.95,
+          "sheet": 0,
+          "cnc": 3500,
+          "injection": 2900,
+          "print3d": 0,
+          "profile": 0
+      },
+      "PA66": {
+          "density": 1.14,
+          "sheet": 0,
+          "cnc": 6800,
+          "injection": 6200,
+          "print3d": 11000,
+          "profile": 0
+      },
+      "MC_NYLON": {
+          "density": 1.16,
+          "sheet": 0,
+          "cnc": 7800,
+          "injection": 0,
+          "print3d": 0,
+          "profile": 0
+      },
+      "PLA": {
+          "density": 1.24,
+          "sheet": 0,
+          "cnc": 0,
+          "injection": 0,
+          "print3d": 5500,
+          "profile": 0
+      },
+      "PETG": {
+          "density": 1.27,
+          "sheet": 0,
+          "cnc": 0,
+          "injection": 0,
+          "print3d": 7200,
+          "profile": 0
+      },
+      "TPU": {
+          "density": 1.2,
+          "sheet": 0,
+          "cnc": 0,
+          "injection": 0,
+          "print3d": 9500,
+          "profile": 0
+      },
+      "PEEK": {
+          "density": 1.31,
+          "sheet": 0,
+          "cnc": 65000,
+          "injection": 58000,
+          "print3d": 90000,
+          "profile": 0
+      }
   },
   process:{
-    commonHourly:65000,
     sheet:{bendUnit:3000,margin:18},
-    cnc:{setup:50000,margin:22},
-    lathe:{setup:30000,margin:20},
-    injection:{setup:0,margin:20},
-    print3d:{setup:5000,margin:28},
+    cnc:{hourly:65000,setup:50000,margin:22},
+    lathe:{hourly:55000,setup:30000,margin:20},
+    injection:{hourly:45000,setup:0,margin:20},
+    print3d:{hourly:15000,setup:5000,margin:28},
     profile:{processPerEa:2000,margin:15},
-    welding:{margin:0},
     purchase:{margin:10},
     unknown:{margin:0}
   }
@@ -150,11 +358,15 @@ function fitCamera(visibleOnly=false){
   if(!has || !Number.isFinite(box.min.x)) return;
   const size=new THREE.Vector3(); box.getSize(size);
   const center=new THREE.Vector3(); box.getCenter(center);
-  const max=Math.max(size.x,size.y,size.z)||10;
-  camera.position.copy(center).add(new THREE.Vector3(max*1.4,max*1.7,max*1.0));
-  camera.near=Math.max(max/2000,0.001); camera.far=Math.max(max*200,1000);
+  const radius=Math.max(size.x,size.y,size.z,1) * 0.5;
+  const fov=(camera.fov||45) * Math.PI / 180;
+  const distance=Math.max(radius / Math.tan(fov/2) * 1.15, 2);
+  const dir=new THREE.Vector3(1.15,1.25,0.9).normalize();
+  camera.position.copy(center).add(dir.multiplyScalar(distance));
+  camera.near=Math.max(distance/3000,0.001);
+  camera.far=Math.max(distance*250,1000);
   camera.updateProjectionMatrix();
-  controls?.target.copy(center); controls?.update();
+  if(controls){ controls.target.copy(center); controls.update(); }
 }
 
 async function handleFile(file){
@@ -273,7 +485,7 @@ function initPart(p,idx){
 }
 function classify(p){
   const name=String(p.name||''); const up=name.toUpperCase(); const m=p.metrics||{};
-  const score={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,injection:0,print3d:0,welding:0}; const reasons=[];
+  const score={purchase:0,profile:0,lathe:0,sheet:0,cnc:0,injection:0,print3d:0}; const reasons=[];
   // 구매품은 공장장이 단가만 수정하도록 최우선
   if(/BOLT|SCREW|NUT|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|PIE|LEAD|FITTING|SPRING|O[-_ ]?RING|CHECK|HANDLE|LEVER/.test(up)){score.purchase+=180; reasons.push('표준품/구매품 이름');}
   // 압출/프로파일: 파이프/튜브는 구매품 우선
@@ -298,7 +510,25 @@ function classify(p){
 }
 function defaultMaterial(process,name){
   const u=String(name).toUpperCase();
+  if(/SUS316|STS316/.test(u)) return 'SUS316';
+  if(/SUS430|STS430/.test(u)) return 'SUS430';
   if(/SUS|STS|NIPPLE|VALVE/.test(u)) return 'SUS304';
+  if(/7075/.test(u)) return 'AL7075';
+  if(/5052/.test(u)) return 'AL5052';
+  if(/6061|AL/.test(u)) return 'AL6061';
+  if(/S45C/.test(u)) return 'S45C';
+  if(/SCM/.test(u)) return 'SCM440';
+  if(/SKD/.test(u)) return 'SKD11';
+  if(/SPCC/.test(u)) return 'SPCC';
+  if(/SPHC/.test(u)) return 'SPHC';
+  if(/SECC/.test(u)) return 'SECC';
+  if(/SGCC/.test(u)) return 'SGCC';
+  if(/BRASS|C3604|황동/.test(u)) return 'C3604';
+  if(/COPPER|C1100|동/.test(u)) return 'C1100';
+  if(/POM|MC/.test(u)) return 'POM';
+  if(/PC/.test(u)) return 'PC';
+  if(/PP/.test(u)) return 'PP';
+  if(/PEEK/.test(u)) return 'PEEK';
   if(process==='sheet') return /HOOD|COVER|BODY|SKEL/.test(u)?'SUS304':'SPCC';
   if(process==='purchase') return /BOLT|NUT|SCREW/.test(u)?'SS400':'SUS304';
   if(process==='injection'||process==='print3d') return 'ABS';
@@ -321,7 +551,7 @@ function recalcAll(){ state.parts.forEach(calcPart); updateStats(); }
 function materialKgPrice(material,process){
   const mat=state.rates.materials[material]||{};
   if(process==='sheet') return mat.sheet||mat.cnc||0;
-  if(process==='cnc'||process==='lathe'||process==='welding') return mat.cnc||mat.sheet||0;
+  if(process==='cnc'||process==='lathe') return mat.cnc||mat.sheet||0;
   if(process==='injection') return mat.injection||mat.cnc||0;
   if(process==='print3d') return mat.print3d||mat.injection||mat.cnc||0;
   if(process==='profile') return mat.profile||mat.cnc||0;
@@ -341,13 +571,11 @@ function calcPart(p){
   } else if(usesTime(p.process)){
     const pr=r[p.process]||{};
     detail.setup=qty>0?num(pr.setup):0;
-    detail.process=qty*num(p.timePerEa)*num(r.commonHourly);
+    detail.process=qty*num(p.timePerEa)*num(pr.hourly);
     pre=matCost+detail.process+detail.setup;
   } else if(p.process==='profile'){
     detail.process=qty*num(r.profile.processPerEa);
     pre=matCost+detail.process;
-  } else if(p.process==='welding'){
-    pre=0; detail.material=0; detail.process=0; detail.note='용접은 내부 검토';
   } else { pre=0; detail.material=0; }
   detail.margin=pre*num(p.margin)/100; p.quote=Math.round(pre+detail.margin); p.costBreakdown=detail; return p.quote;
 }
@@ -361,8 +589,8 @@ function renderParts(){ const body=$('partsBody'); if(!state.parts.length){ body
       <td>${selectProcess(p)}</td>
       <td>${selectMaterial(p)}</td>
       <td>${processInputCell(p)}</td>
-      <td>${input(p.id,'margin',p.margin,'number','1',p.process==='welding')}</td>
-      <td class="money">${p.process==='welding'?'내부검토':won(p.quote)}</td>
+      <td>${input(p.id,'margin',p.margin,'number','1',false)}</td>
+      <td class="money">${won(p.quote)}</td>
     </tr>`).join('');
   body.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('input,select,button')) return; selectPart(tr.dataset.id); }));
   body.querySelectorAll('input,select').forEach(el=>el.addEventListener('change', onPartEdit));
@@ -372,7 +600,6 @@ function processInputCell(p){
   if(usesTime(p.process)) return `<div class="inline-edit"><label>시간/개</label>${input(p.id,'timePerEa',p.timePerEa,'number','0.01',false)}</div>`;
   if(p.process==='purchase') return `<div class="inline-edit"><label>구매단가</label>${input(p.id,'purchaseUnit',p.purchaseUnit,'number','1',false)}</div>`;
   if(p.process==='profile') return `<span class="muted-small">압출 가공비 적용</span>`;
-  if(p.process==='welding') return `<span class="muted-small">내부 검토</span>`;
   return `<span class="muted-small">공법 선택 필요</span>`;
 }
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
@@ -386,6 +613,7 @@ function onPartEdit(e){
   if(['qty','kgPerEa','timePerEa','bends','purchaseUnit','margin'].includes(f)) v=num(v);
   p[f]=v;
   if(f==='process'){
+    if(!PROCESSES.includes(p.process)) p.process='unknown';
     p.margin=state.rates.process[p.process]?.margin??p.margin;
     if(p.process==='purchase' && !p.purchaseUnit) p.purchaseUnit=estimatePurchaseUnit(p.name);
     if(p.process!=='sheet') p.bends=0;
@@ -395,20 +623,19 @@ function onPartEdit(e){
 }
 function selectPart(id){ state.selectedId=id; const p=state.parts.find(x=>x.id===id); showPart(p); renderParts(); renderSelected(); }
 function renderSelected(){ const p=state.parts.find(x=>x.id===state.selectedId); const el=$('selectedPanel'); if(!p){ el.innerHTML='<h2>선택 파트</h2><p class="muted">파트를 선택하세요.</p>'; return; }
-  const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금: 절곡수 입력':usesTime(p.process)?'시간 공정: 시간/개 입력':p.process==='purchase'?'구매품: 단가 입력':p.process==='welding'?'용접: 내부 검토':'기본 계산';
+  const b=p.costBreakdown||{}; const mode = p.process==='sheet'?'판금: 절곡수 입력':usesTime(p.process)?'시간 공정: 시간/개 입력':p.process==='purchase'?'구매품: 단가 입력':'기본 계산';
   el.innerHTML=`<h2>선택 파트</h2><h3>${esc(p.name)}</h3><p class="muted">${esc(p.meshName||'형상 미연결')}</p>
   <div class="selected-grid"><div><b>공법</b><br>${PROCESS_LABELS[p.process]}</div><div><b>수량</b><br>${p.qty}</div><div><b>입력 기준</b><br>${mode}</div><div><b>예상 무게</b><br>${p.kgPerEa}kg/개</div></div>
   <div class="service-note">재료비 ${won(b.material||0)} / 공정비 ${won(b.process||0)} / 셋업 ${won(b.setup||0)} / 마진 ${won(b.margin||0)}</div>
   <h3>빠른 변경</h3><div class="quick-actions">
     <button data-quick="sheet">판금/절곡</button><button data-quick="cnc">CNC/MCT</button><button data-quick="purchase">구매품</button><button data-quick="print3d">3D프린팅</button>
-    <button data-quick="profile">압출</button><button data-quick="welding">용접검토</button><button data-quick="bendPlus">절곡 +1</button><button data-quick="bendMinus">절곡 -1</button>
-  </div><h2 class="money">${p.process==='welding'?'내부검토':won(p.quote)}</h2>`;
+    <button data-quick="profile">압출</button>
+  </div><h2 class="money">${won(p.quote)}</h2>`;
   el.querySelectorAll('button[data-quick]').forEach(btn=>btn.addEventListener('click',()=>quickEdit(p,btn.dataset.quick)));
 }
 function quickEdit(p,cmd){
   if(PROCESSES.includes(cmd)){ p.process=cmd; p.margin=state.rates.process[cmd]?.margin??p.margin; if(cmd==='purchase'&&!p.purchaseUnit)p.purchaseUnit=estimatePurchaseUnit(p.name); if(cmd!=='sheet')p.bends=0; if(!usesTime(cmd))p.timePerEa=0; }
-  if(cmd==='bendPlus')p.bends++; if(cmd==='bendMinus')p.bends=Math.max(0,p.bends-1);
-  calcPart(p); renderParts(); renderSelected(); updateStats();
+    calcPart(p); renderParts(); renderSelected(); updateStats();
 }
 
 function renderRateEditors(){ renderMaterialRates(); renderProcessRates(); }
@@ -416,7 +643,10 @@ function renderMaterialRates(){ const mat=state.rates.materials; $('materialRate
   $('materialRateEditor').querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ state.rates.materials[i.dataset.mat][i.dataset.key]=num(i.value); recalcAll(); renderParts(); renderSelected(); }));
 }
 function renderProcessRates(){ const lines=[
-  ['commonHourly','공통 시간당 단가'],
+  ['cnc.hourly','CNC/MCT 시간당 단가'],
+  ['lathe.hourly','선반 시간당 단가'],
+  ['injection.hourly','사출 시간당 단가'],
+  ['print3d.hourly','3D프린팅 시간당 단가'],
   ['sheet.bendUnit','판금 절곡 1회 단가'],
   ['cnc.setup','CNC 셋업비'],
   ['lathe.setup','선반 셋업비'],
