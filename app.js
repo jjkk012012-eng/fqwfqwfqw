@@ -72,6 +72,43 @@ function isAssemblyName(s){return /(^|[_\-])(ASM|ASSY|ASSEMBLY)($|[_\-])|_ASM$|_
 function basename(n){return String(n||'').replace(/\.[^.]+$/,'');}
 function numberTokens(s){return (String(s||'').match(/\d+/g)||[]).map(x=>String(Number(x))).filter(Boolean);}
 function wordTokens(s){return String(s||'').toUpperCase().split(/[^A-Z0-9가-힣]+/).filter(Boolean);}
+
+function baseTokens(s){
+  return wordTokens(s).filter(t=>t.length>=2 && !/^(REV|ASM|ASSY|PART|BODY|TOTAL|DESIGN|MODEL|LEFT|RIGHT|TOP|BOTTOM)$/.test(t));
+}
+function learnedMap(){
+  try{return JSON.parse(localStorage.getItem('factory_step_process_learn_v35')||'{}')||{};}catch{return {};}
+}
+function saveLearnedProcess(part){
+  if(!part || !part.name || part.process==='unknown') return;
+  const key=norm(part.name); if(!key) return;
+  const map=learnedMap();
+  map[key]={process:part.process, material:part.material, margin:part.margin, savedAt:Date.now()};
+  try{localStorage.setItem('factory_step_process_learn_v35', JSON.stringify(map));}catch{}
+}
+function findLearnedProcess(name){
+  const key=norm(name); if(!key) return null;
+  const map=learnedMap();
+  if(map[key]) return {...map[key], reason:'이전에 수정한 동일 파트명'};
+  const toks=baseTokens(name);
+  let best=null;
+  for(const [k,v] of Object.entries(map)){
+    let score=0;
+    for(const t of toks){ if(k.includes(norm(t))) score++; }
+    if(score>=2 && (!best || score>best.score)) best={...v,score,reason:'이전에 수정한 유사 파트명'};
+  }
+  return best;
+}
+const PROC_RULES={
+  purchase:[/BOLT|SCREW|HEX\s*NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|PIE|FITTING|LEAD|CABLE|WIRE|HANDLE|KNOB|LEVER|CYLINDER|DAMPER|CHECKVALVE|O[-_]?RING|SPRING|HINGE|CASTER|COUPLER|COUPLING/i],
+  profile:[/PROFILE|AL[_-]?FRAME|ALFRAME|EXTRUSION|2020|3030|4040|4080|4545|5050|6060|8080|프로파일/i],
+  lathe:[/SHAFT|PIN|BUSH|BUSHING|ROLLER|COLLAR|ROD|SPINDLE|SLEEVE|축|핀|부싱|롤러/i],
+  sheet:[/HOOD|COVER|PANEL|SHEET|SKEL|SKIN|BODY|SIDE|TOP|BOTTOM|BRACKET|PLATE|DOOR|CASE|DUCT|판|커버|후드|브라켓|판금/i],
+  cnc:[/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|BY2|가공|블록|지그|마운트|홀더/i],
+  injection:[/ABS|POM|PC|PP|PE|PA66|NYLON|PLASTIC|RESIN|INJECTION|MOLD|MOULD|사출|수지/i],
+  print3d:[/PRINT|FDM|SLA|SLS|MJF|3D|PLA|PETG|TPU|프린팅|출력/i]
+};
+function anyMatch(list,name){return list.some(r=>r.test(name));}
 function processLabel(p){return PROCESS_LABELS[p]||p;}
 
 function init(){
@@ -79,7 +116,7 @@ function init(){
 }
 async function loadDefaultRates(){
   try{
-    const saved=localStorage.getItem('factory_step_rates_v34');
+    const saved=localStorage.getItem('factory_step_rates_v35');
     if(saved) state.rates=mergeRates(structuredClone(DEFAULT_RATES), JSON.parse(saved));
     else {
       const res=await fetch('data/rates.json'); if(res.ok) state.rates=mergeRates(structuredClone(DEFAULT_RATES), await res.json());
@@ -105,7 +142,7 @@ function bindEvents(){
   $('addPartBtn').onclick=addManualPart;
   $('fitButton').onclick=()=>fitCamera(true);
   document.querySelectorAll('.quick-grid button').forEach(b=>b.onclick=()=>{const p=selectedPart(); if(p){applyProcess(p,b.dataset.proc); renderAll(); showPart(p);}});
-  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v34', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
+  $('saveRatesBtn').onclick=()=>{localStorage.setItem('factory_step_rates_v35', JSON.stringify(state.rates)); flash('ok','단가표를 브라우저에 저장했습니다.');};
   $('downloadRatesBtn').onclick=downloadRates;
   $('loadRatesBtn').onclick=()=>$('rateFileInput').click();
   $('rateFileInput').onchange=e=>{const f=e.target.files?.[0]; if(f) loadRatesFile(f);};
@@ -260,26 +297,42 @@ function clearFocus(){const root=state.three.root; if(state.focusClone&&root){ro
 function normalizeClone(clone){
   clone.updateWorldMatrix(true,true); const box=new THREE.Box3().setFromObject(clone); if(!Number.isFinite(box.min.x)) return;
   const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const maxDim=Math.max(size.x,size.y,size.z,1);
-  clone.position.x-=center.x; clone.position.y-=center.y; clone.position.z-=center.z; clone.scale.setScalar(260/maxDim);
+  clone.position.x-=center.x; clone.position.y-=center.y; clone.position.z-=center.z; clone.scale.setScalar(520/maxDim);
 }
 function visibleBox(){const box=new THREE.Box3(); let has=false; const root=state.three.root; if(!root) return {box,has}; root.updateWorldMatrix(true,true); root.traverse(o=>{if(!o.visible||!o.isMesh||!o.geometry)return; if(!o.geometry.boundingBox)o.geometry.computeBoundingBox(); const b=o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); if(Number.isFinite(b.min.x)){box.union(b);has=true;}}); return {box,has};}
-function fitCamera(){const {camera,controls}=state.three; if(!camera) return; const {box,has}=visibleBox(); if(!has)return; const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const maxDim=Math.max(size.x,size.y,size.z,1); const dist=maxDim*2.4; camera.position.set(center.x+dist,center.y+dist*.75,center.z+dist*.55); camera.near=.01; camera.far=100000; camera.updateProjectionMatrix(); if(controls){controls.target.copy(center); controls.update();}}
+function fitCamera(){const {camera,controls}=state.three; if(!camera) return; const {box,has}=visibleBox(); if(!has)return; const size=new THREE.Vector3(); box.getSize(size); const center=new THREE.Vector3(); box.getCenter(center); const maxDim=Math.max(size.x,size.y,size.z,1); const fov=(camera.fov||38)*Math.PI/180; const dist=(maxDim/(2*Math.tan(fov/2)))*1.10; camera.position.set(center.x+dist*.95,center.y+dist*.72,center.z+dist*.48); camera.near=.01; camera.far=100000; camera.updateProjectionMatrix(); if(controls){controls.target.copy(center); controls.update();}}
 
 function makeParts(textInfo){
   return textInfo.parts.map(p=>({name:p.name,qty:p.qty,source:p.source}));
 }
 function assignMeshToPart(part, orderIndex){
-  const n=norm(part.name); let best=null;
-  if(n){best=state.meshObjects.find(o=>o.norm===n || (!isNumberish(o.name)&&(o.norm.includes(n)||n.includes(o.norm))));}
-  if(!best){const nums=numberTokens(part.name); if(nums.length) best=state.meshObjects.find(o=>numberTokens(o.name).some(x=>nums.includes(x)));}
-  if(!best){
-    const toks=wordTokens(part.name).filter(t=>t.length>=3);
-    if(toks.length){
-      best=state.meshObjects.map(o=>({o,score:toks.reduce((s,t)=>s+(o.norm.includes(norm(t))?1:0),0)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score)[0]?.o || null;
+  const pNorm=norm(part.name); let best=null, bestScore=-1;
+  const consider=(o,score)=>{ if(o && score>bestScore){best=o; bestScore=score;} };
+  if(pNorm){
+    for(const o of state.meshObjects){
+      if(o.norm===pNorm) consider(o,1000);
+      else if(!isNumberish(o.name) && (o.norm.includes(pNorm)||pNorm.includes(o.norm))) consider(o,760);
     }
   }
-  if(!best && state.meshObjects[orderIndex]) best=state.meshObjects[orderIndex];
-  if(best){part.meshIndex=best.index; part.meshName=best.name; part.metrics=best.metrics;}
+  const nums=numberTokens(part.name);
+  if(nums.length){
+    for(const o of state.meshObjects){
+      const on=numberTokens(o.name);
+      const hits=on.filter(x=>nums.includes(x)).length;
+      if(hits) consider(o,420+hits*40);
+    }
+  }
+  const toks=baseTokens(part.name).filter(t=>t.length>=3);
+  if(toks.length){
+    for(const o of state.meshObjects){
+      if(isNumberish(o.name)) continue;
+      const score=toks.reduce((s,t)=>s+(o.norm.includes(norm(t))?95:0),0);
+      if(score>0) consider(o,score);
+    }
+  }
+  // 마지막 수단: 순서 매칭. 형상은 보여주되 추천/견적은 이름 기준을 우선한다.
+  if(!best && state.meshObjects[orderIndex]) consider(state.meshObjects[orderIndex],80);
+  if(best){part.meshIndex=best.index; part.meshName=best.name; part.metrics=best.metrics; part.meshMatchScore=bestScore;}
 }
 function isNumberish(name){return /^#?\d+$/.test(String(name||'').trim()) || /^MESH[_-]?\d+$/i.test(String(name||'').trim());}
 function initPart(p,i){
@@ -324,28 +377,64 @@ function defaultPurchasePrice(part){
 }
 
 function recommendProcess(part){
-  const name=part.name.toUpperCase(); const m=part.metrics||{}; const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0}; const reasons=[];
-  const add=(p,v,r)=>{scores[p]+=v; if(v>0&&r)reasons.push(`${processLabel(p)} +${v}: ${r}`);};
-  if(/BOLT|SCREW|HEX_NUT|\bNUT\b|WASHER|RIVET|REVET|BEARING|SENSOR|MOTOR|VALVE|NIPPLE|PIPE|TUBE|PIE|FITTING|LEAD|CABLE|WIRE|HANDLE|KNOB|LEVER|CYLINDER|DAMPER|CHECK_VALVE/i.test(name)) add('purchase',220,'표준품/구매품 이름');
-  if(/PROFILE|AL[_-]?FRAME|EXTRUSION|2020|3030|4040|4080|4545|5050/i.test(name) && !/PIPE|TUBE|PIE|NIPPLE/i.test(name)) add('profile',180,'프로파일/압출 이름');
-  if(/SHAFT|PIN|BUSH|ROLLER|COLLAR|ROD|축|핀|부싱/i.test(name)) add('lathe',150,'축/원통 부품 이름');
-  if(/HOOD|COVER|PANEL|SHEET|SKEL|BODY|SIDE|TOP|BRACKET|PLATE|판|커버|후드/i.test(name)) add('sheet',80,'판금류 이름');
-  if(/BEND|BENT|FOLD|FLANGE|L_BRACKET|U_BRACKET|절곡/i.test(name)) add('sheet',80,'절곡 힌트 이름');
-  if(/BASE|BLOCK|JIG|FIXTURE|MOUNT|HOLDER|SUPPORT|ADAPTER|GUIDE|CLAMP|BY2|가공/i.test(name)) add('cnc',120,'가공품 이름');
-  if(/12T|15T|20T|25T|30T/.test(name)) add('cnc',90,'두꺼운 소재 표기');
-  if(/ABS|POM|PC|PP|PE|PA66|NYLON|PLASTIC|RESIN|사출/i.test(name)) add('injection',95,'수지/사출 이름');
-  if(/PRINT|FDM|SLA|SLS|MJF|3D/.test(name)) add('print3d',130,'3D프린팅 이름');
-  if(m.cylinderLike) add('lathe',80,'길쭉한 원통형');
-  if(m.uniformSheet || m.sheetLike) add('sheet',90,'같은 두께의 얇은 판재형');
-  if(m.solidness>.35 && !m.sheetLike && !m.cylinderLike) add('cnc',55,'덩어리형 절삭 후보');
-  if(m.slenderness>8 && m.midDim/m.minDim<1.8) add('lathe',40,'길쭉한 형상');
-  if(scores.purchase>0){scores.profile-=90;scores.cnc-=90;scores.sheet-=90;scores.lathe-=90;scores.injection-=60;scores.print3d-=60;}
-  if(scores.sheet>120){scores.cnc-=60;}
+  const name=String(part.name||'').toUpperCase();
+  const n=norm(name);
+  const m=part.metrics||{};
+  const scores={purchase:0,sheet:0,cnc:0,lathe:0,injection:0,print3d:0,profile:0};
+  const reasons=[];
+  const add=(p,v,r)=>{scores[p]+=v; if(v>0&&r) reasons.push(`${processLabel(p)} +${v}: ${r}`);};
+
+  const learned=findLearnedProcess(name);
+  if(learned?.process){
+    return {process:learned.process, score:999, confidence:'높음', scores:{...scores,[learned.process]:999}, reasons:[learned.reason]};
+  }
+
+  // 1. 구매품은 최우선. 파이프/튜브/니플도 구매품으로 우선 분류한다.
+  if(anyMatch(PROC_RULES.purchase,name)) add('purchase',320,'표준품/구매품 이름');
+  if(/M\d+[-_ ]?L\d+|M\d+\b|ISO|DIN|KS/i.test(name) && /BOLT|SCREW|NUT|WASHER/i.test(name)) add('purchase',140,'규격품 표기');
+
+  // 2. 프로파일. 단, PIPE/TUBE/PIE/NIPPLE은 구매품 우선이라 감점한다.
+  if(anyMatch(PROC_RULES.profile,name) && !/PIPE|TUBE|PIE|NIPPLE/i.test(name)) add('profile',260,'프로파일/압출 이름');
+
+  // 3. 선반. 이름 + 형상 모두 반영.
+  if(anyMatch(PROC_RULES.lathe,name)) add('lathe',210,'축/원통 부품 이름');
+  if(m.cylinderLike) add('lathe',130,'길쭉한 원통형 형상');
+  if(m.slenderness>7 && m.midDim && m.minDim && m.midDim/m.minDim<1.55) add('lathe',80,'봉형 비율');
+
+  // 4. 판금/절곡. 같은 두께 얇은 판재형이면 꺾였든 안 꺾였든 판금이다.
+  if(anyMatch(PROC_RULES.sheet,name)) add('sheet',130,'판재/커버/바디 계열 이름');
+  if(/\b(0\.8T|1T|1\.0T|1\.2T|1\.5T|2T|2\.0T|2\.3T|3T|3\.0T|4T|5T|6T|8T)\b/i.test(name)) add('sheet',120,'판재 두께 표기');
+  if(/BEND|BENT|FOLD|FLANGE|절곡/i.test(name)) add('sheet',120,'절곡 힌트');
+  if(m.uniformSheet) add('sheet',180,'같은 두께의 얇은 판재형');
+  else if(m.sheetLike) add('sheet',130,'넓고 얇은 판재형');
+
+  // 5. CNC/MCT. 구매품/판금/선반/프로파일이 아니고 덩어리형이면 CNC.
+  if(anyMatch(PROC_RULES.cnc,name)) add('cnc',170,'절삭 가공품 이름');
+  if(/(10T|12T|15T|16T|20T|25T|30T|40T)/i.test(name)) add('cnc',115,'두꺼운 소재/블록 표기');
+  if(m.solidness>.32 && !m.sheetLike && !m.cylinderLike) add('cnc',115,'bbox 대비 체적이 높은 덩어리형');
+  if(m.minDim>10 && m.midDim/m.minDim<4 && !m.cylinderLike) add('cnc',70,'두께가 있는 가공형 비율');
+
+  // 6. 사출/3D프린팅. 이름/재질 힌트가 있을 때만 강하게 추천.
+  if(anyMatch(PROC_RULES.injection,name)) add('injection',150,'수지/사출 이름');
+  if(anyMatch(PROC_RULES.print3d,name)) add('print3d',190,'3D프린팅 이름');
+
+  // 우선순위/배타 규칙
+  if(scores.purchase>0){scores.profile-=220; scores.sheet-=180; scores.cnc-=220; scores.lathe-=160; scores.injection-=120; scores.print3d-=120;}
+  if(scores.profile>180){scores.sheet-=80; scores.cnc-=130; scores.lathe-=90;}
+  if(scores.lathe>180){scores.sheet-=90; scores.cnc-=70;}
+  if(scores.sheet>220){scores.cnc-=160; scores.injection-=50; scores.print3d-=50;}
+  if(scores.cnc>220 && !m.sheetLike){scores.sheet-=80;}
+  if(scores.injection>130 && /AL|SUS|SS400|S45C|SCM|STEEL|SPCC|SECC|SGCC/i.test(name)) scores.injection-=120;
+
   const entries=Object.entries(scores).sort((a,b)=>b[1]-a[1]);
-  let [process,score]=entries[0]; const second=entries[1]?.[1]||0;
-  if(score<60 || score-second<22){process='unknown';}
-  let conf='낮음'; if(score>=160)conf='높음'; else if(score>=100)conf='보통';
-  return {process,score,confidence:conf,scores,reasons:reasons.slice(0,5)};
+  let [process,score]=entries[0];
+  const second=entries[1]?.[1]??0;
+  // 추천 정확도 우선: 애매한 케이스는 분류 필요로 둔다.
+  if(score<115 || score-second<35) process='unknown';
+  let conf='낮음';
+  if(score>=260 && score-second>=70) conf='높음';
+  else if(score>=170 && score-second>=45) conf='보통';
+  return {process,score,confidence:conf,scores,reasons:reasons.slice(0,6)};
 }
 
 function computeMetrics(raw,geom){
@@ -366,8 +455,8 @@ function computeMetrics(raw,geom){
     }
     m.area=area; m.volume=Math.abs(vol); m.solidness=m.bboxVolume?Math.min(1,m.volume/m.bboxVolume):0; m.slenderness=m.midDim?m.maxDim/m.midDim:0;
     m.cylinderLike=m.minDim>0 && m.midDim>0 && (m.midDim/m.minDim<1.45) && (m.maxDim/m.midDim>2.0);
-    m.uniformSheet=m.minDim>0 && m.minDim<=8 && m.maxDim/m.minDim>=6 && m.midDim/m.minDim>=2.0 && !m.cylinderLike;
-    m.sheetLike=m.uniformSheet || (m.minDim>0 && m.maxDim/m.minDim>10 && m.midDim/m.minDim>3);
+    m.uniformSheet=m.minDim>0 && m.minDim<=10 && m.maxDim/m.minDim>=5.0 && m.midDim/m.minDim>=1.8 && !m.cylinderLike;
+    m.sheetLike=m.uniformSheet || (m.minDim>0 && m.minDim<=12 && m.maxDim/m.minDim>8 && m.midDim/m.minDim>2.4 && !m.cylinderLike);
   }catch(e){console.warn('metrics fail',e);} return m;
 }
 
@@ -393,7 +482,7 @@ function recalcPart(p){
 }
 function recalcAll(){state.parts.forEach(recalcPart); updateStats();}
 function totalQuote(){return state.parts.reduce((s,p)=>s+num(p.quote),0);}
-function applyProcess(part,proc){part.process=proc; part.margin=num(state.rates.margins[proc],0); if(proc==='purchase'){part.purchaseUnit=part.purchaseUnit||defaultPurchasePrice(part); part.inputValue=part.purchaseUnit;} else {part.inputValue=defaultInput(part);} recalcPart(part);}
+function applyProcess(part,proc){part.process=proc; part.margin=num(state.rates.margins[proc],0); if(proc==='purchase'){part.purchaseUnit=part.purchaseUnit||defaultPurchasePrice(part); part.inputValue=part.purchaseUnit;} else {part.inputValue=defaultInput(part);} recalcPart(part); saveLearnedProcess(part);}
 
 function renderAll(){renderParts(); renderSelected(); updateStats();}
 function updateStats(){ $('statParts').textContent=state.parts.length; $('statTotal').textContent=won(totalQuote()); $('statStatus').textContent=state.parts.length?'완료':'대기'; }
@@ -426,14 +515,14 @@ function rowHTML(p){
     <td><button class="delbtn" data-id="${p.id}">삭제</button></td>
   </tr>`;
 }
-function handleCell(el){const p=state.parts.find(x=>x.id===el.dataset.id); if(!p)return; const act=el.dataset.act; if(act==='qty')p.qty=num(el.value,1); if(act==='process')applyProcess(p,el.value); if(act==='material')p.material=el.value; if(act==='input'){ if(p.process==='purchase')p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0);} if(act==='margin')p.margin=num(el.value,0); recalcPart(p); renderAll(); if(p.id===state.selectedId) showPart(p);}
+function handleCell(el){const p=state.parts.find(x=>x.id===el.dataset.id); if(!p)return; const act=el.dataset.act; if(act==='qty')p.qty=num(el.value,1); if(act==='process'){applyProcess(p,el.value); saveLearnedProcess(p);} if(act==='material')p.material=el.value; if(act==='input'){ if(p.process==='purchase')p.purchaseUnit=num(el.value,0); p.inputValue=num(el.value,0);} if(act==='margin')p.margin=num(el.value,0); recalcPart(p); renderAll(); if(p.id===state.selectedId) showPart(p);}
 function selectPart(id){state.selectedId=id; renderParts(); renderSelected(); const p=selectedPart(); if(p)showPart(p);}
 function removePart(id){state.parts=state.parts.filter(p=>p.id!==id); if(state.selectedId===id)state.selectedId=state.parts[0]?.id||null; recalcAll(); renderAll(); if(state.selectedId)showPart(selectedPart());}
 function addManualPart(){const p=initPart({name:'수동 구매품 '+state.manualSeq++,qty:1,source:'manual'},state.parts.length); p.process='purchase'; p.material='SS400'; p.purchaseUnit=1000; p.inputValue=1000; p.margin=num(state.rates.margins.purchase,10); recalcPart(p); state.parts.push(p); state.selectedId=p.id; renderAll();}
 function renderSelected(){
   const box=$('selectedInfo'), p=selectedPart(); if(!p){box.innerHTML='<div class="muted">파트를 선택하세요.</div>';return;}
   const m=p.metrics||{}; const dims=(m.dims||[]).map(x=>Math.round(x)).join(' × ');
-  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="details-grid">
+  box.innerHTML=`<div class="selected-card"><b>${esc(p.name)}</b><div class="muted">${processLabel(p.process)} · ${p.material}</div><div class="calcnote">${esc(p.calcNote||'')}</div><div class="calcnote">추천근거: ${esc((p.score?.reasons||[]).slice(0,3).join(' / ')||'-')}</div><div class="details-grid">
     <div><label>예상중량 kg/개</label><input id="selWeight" value="${kgEach(p).toFixed(4)}"></div>
     <div><label>크기 mm</label><input value="${esc(dims||'-')}" disabled></div>
     <div><label>체적 cm³</label><input value="${volumeCm3(p).toFixed(2)}" disabled></div>
